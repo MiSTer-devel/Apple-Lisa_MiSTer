@@ -1,0 +1,79 @@
+set_global_assignment -name QIP_FILE sys/sys.qip
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram_ctrl.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sdram_lisa.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ps2_kbd.sv
+set_global_assignment -name VERILOG_FILE rtl/ps2_mouse.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/pll.sv
+set_global_assignment -name VERILOG_FILE rtl/clock_divider.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug_issp.sv
+set_global_assignment -name VERILOG_FILE rtl/dotck_mmcm.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/profile.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rtc_lisa.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ps2_to_usb_hid.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/usb_keyboard_interface.sv
+set_global_assignment -name VERILOG_FILE rtl/6502.v
+set_global_assignment -name VERILOG_FILE rtl/ALU.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/AM9512_FPU.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/CPU_board.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/IOROM_2732.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/IO_RAM_444C_3.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/IO_board.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/LS323_shiftreg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/Lite_Adapter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/MMU_RAM_2148.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/PROM_6309.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/RAM_4164.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/RAM_matrix.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/SDRAM_Controller_Flat.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/addressable_latch_LS259.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/bootrom_2764.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/decoder_2to4.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/decoder_3to8.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/encoder_8to3_LS148.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/fx68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/fx68kAlu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem_board_2mb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem_board_512k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/parity_generator_LS280.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/top.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/stubs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/usb_mouse_interface.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/uaddrPla.sv
+set_global_assignment -name VERILOG_FILE rtl/via6522.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/z8530_scc.sv
+# --- COP421 (t420): EXPERIMENT — the FPGA now uses the GHDL-generated Verilog
+# --- (rtl/t420_notri.v) instead of the VHDL sources, so the FPGA and the
+# --- Verilator sim share ONE COP model. The .v is self-contained (all t400_*
+# --- sub-modules + t420_rom microcode + generic_ram_ena RAM) and carries the
+# --- ck_en_s / io_g_s driver fixes. To REVERT: restore these VHDL_FILE lines
+# --- and remove the VERILOG_FILE line below.
+# set_global_assignment -name VHDL_FILE rtl/generic_ram_ena.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_alu.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_clkgen.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_core.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_decoder.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_dmem_ctrl.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_io_d.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_io_g.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_io_in.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_io_l.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_io_pack-p.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_mnemonic_pack-p.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_opt_pack-p.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_pack-p.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_pmem_ctrl.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_por.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_reset.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_sio.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_skip.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_stack.vhd
+# set_global_assignment -name VHDL_FILE rtl/t400_timer.vhd
+# set_global_assignment -name VHDL_FILE rtl/t410_rom-e.vhd
+# set_global_assignment -name VHDL_FILE rtl/t420_notri.vhd
+# set_global_assignment -name VHDL_FILE rtl/t420_rom.vhd
+# set_global_assignment -name VHDL_FILE rtl/tb_pack-p.vhd
+set_global_assignment -name VERILOG_FILE rtl/t420_notri.v
+# Clean-SV reimplementation of the COP SIO (module t400_sio_0_0), extracted from
+# t420_notri.v. Fixes a Verilator eval hazard; must compile alongside the .v.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/t400_sio.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Apple-Lisa.sv
