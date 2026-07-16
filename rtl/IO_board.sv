@@ -499,6 +499,52 @@ module IO_board(
     // And also, the floppy disk WRD line gets pulled straight off the PROM address line 7, before it goes thru the flip-flop
     assign WRD = PROM_address[7];
 
+    // DEBUG (ISSP "LSEQ", remove for release): capture the GCR byte stream the
+    // P6A sequencer assembles from RDA (PSM_out). Shows whether the emulated
+    // flux decodes to valid GCR bytes (D5 AA 96 ...) or garbage.
+    // Rolling last-2 assembled bytes for mark detection + DATA-FIELD capture, to
+    // diagnose the M5 floppy-boot data-field read bug (address field frames OK but
+    // the 699-byte data field reads corrupted). Detect the data mark D5 AA AD, latch
+    // the first 4 GCR bytes after it (dcap0..3), and flag whether the data field
+    // reaches its DE AA epilogue with framing intact (seq_saw_depi) -> distinguishes
+    // "framing breaks mid-field" (sync/drift) from "framed but wrong bytes" (checksum).
+    reg [7:0]  seq_r0=0, seq_r1=0, seq_prev=0;
+    reg [7:0]  dcap0=0, dcap1=0, dcap2=0, dcap3=0;
+    reg [15:0] seq_valid_cnt=0;
+    reg        seq_saw_addr=0;    // D5 AA 96 (address mark) seen
+    reg        seq_saw_data=0;    // D5 AA AD (data mark) seen
+    reg        seq_saw_depi=0;    // DE AA (data epilogue) seen inside a data field
+    reg        seq_in_data=0;     // between a data mark and the next mark/epilogue
+    reg        dcap_arm=0;
+    reg [2:0]  dcap_n=0;
+    always @(posedge clk_sys) begin
+        if (c16m_en & state_machine_clk_enable) begin
+            if (PSM_out[7] & (PSM_out != seq_prev)) begin   // a new assembled byte
+                seq_valid_cnt <= seq_valid_cnt + 16'd1;
+                if (seq_r1 == 8'hD5 && seq_r0 == 8'hAA && PSM_out == 8'h96) begin
+                    seq_saw_addr <= 1'b1; seq_in_data <= 1'b0;
+                end
+                if (seq_r1 == 8'hD5 && seq_r0 == 8'hAA && PSM_out == 8'hAD) begin
+                    seq_saw_data <= 1'b1; seq_in_data <= 1'b1;   // (re)arm capture on each data mark
+                    dcap_arm     <= 1'b1; dcap_n <= 3'd0;
+                end else if (seq_in_data && seq_r1 == 8'hDE && seq_r0 == 8'hAA) begin
+                    seq_saw_depi <= 1'b1; seq_in_data <= 1'b0;
+                end else if (dcap_arm) begin                     // 4 GCR bytes after the data mark
+                    case (dcap_n)
+                        3'd0:    dcap0 <= PSM_out;
+                        3'd1:    dcap1 <= PSM_out;
+                        3'd2:    dcap2 <= PSM_out;
+                        default: dcap3 <= PSM_out;
+                    endcase
+                    if (dcap_n == 3'd3) dcap_arm <= 1'b0;
+                    else                dcap_n   <= dcap_n + 3'd1;
+                end
+                seq_r1 <= seq_r0; seq_r0 <= PSM_out;
+            end
+            seq_prev <= PSM_out;
+        end
+    end
+
     // Now for the two LS259 addressable latches that hold the floppy drive control signals
     // This is pretty simple; they're addressed by MA[3:1] with the data on MA[0] and clocked by lines from a decoder we'll make later
     // One of the latch outputs is an intermediate signal used to form the state machine clock
@@ -1607,6 +1653,19 @@ module IO_board(
         dbg_pen_fall_cnt, dbg_cmdu_edge_cnt,
         dbg_kv_wr_cnt, dbg_kv_rd_cnt, dbg_pp_io_nz,
         _ProFile_EN, _CMD_ungated, _CMD, _PSTRB, dbg_cmd_while_en
+    }), .source_clk(clk_sys), .source_ena(1'b1) );
+    // LSEQ: GCR read diagnosis. [63]=saw D5 AA 96 (addr mark) [62]=saw D5 AA AD
+    //   (data mark) [61]=saw DE AA data epilogue (framing held to field end)
+    //   [60]=FDIR_ever [59]=FDIR [47:32]=valid byte count
+    //   [31:24]=dcap0 [23:16]=dcap1 [15:8]=dcap2 [7:0]=dcap3 (first 4 GCR bytes after data mark)
+    reg fdir_ever = 1'b0;
+    always @(posedge clk_sys) if (FDIR) fdir_ever <= 1'b1;
+    altsource_probe #(
+        .instance_id ("LSEQ"), .probe_width (64), .source_width (1),
+        .source_initial_value ("0"), .enable_metastability ("NO")
+    ) u_seq_probe ( .source(), .probe({
+        seq_saw_addr, seq_saw_data, seq_saw_depi, fdir_ever, FDIR, 11'd0,
+        seq_valid_cnt, dcap0, dcap1, dcap2, dcap3
     }), .source_clk(clk_sys), .source_ena(1'b1) );
     `endif
 

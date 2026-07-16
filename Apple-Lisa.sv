@@ -149,6 +149,7 @@ module emu (
         "Apple-Lisa;UART115200;",
         "-;",
         "S0,IMGVHD,Mount Hard Disk;",
+        "S1,DC4DSKIMG,Mount Floppy;",
         "-;",
         "O9A,Aspect ratio,4:3,Original,Full Screen,[ARC1];",
         "OBC,Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
@@ -175,19 +176,21 @@ module emu (
     wire [24:0] ioctl_addr;
     wire [15:0] ioctl_data;
 
-    // ProFile Hard Disk HPS signals
-    wire [31:0] sd_lba[1];
-    wire        sd_rd;
-    wire        sd_wr;
-    wire        sd_ack;
+    // HPS SD/disk-image signals. Two virtual drives: slot 0 = ProFile hard
+    // disk, slot 1 = Sony floppy. hps_io makes the per-slot signals arrays /
+    // vectors of width VDNUM; the buff_addr/dout/wr bus is shared.
+    wire [31:0] sd_lba[2];
+    wire  [1:0] sd_rd;
+    wire  [1:0] sd_wr;
+    wire  [1:0] sd_ack;
     wire  [7:0] sd_buff_addr;
     wire [15:0] sd_buff_dout;
-    wire [15:0] sd_buff_din[1];
+    wire [15:0] sd_buff_din[2];
     wire        sd_buff_wr;
-    wire        img_mounted;
+    wire  [1:0] img_mounted;
     wire [63:0] img_size;
 
-    hps_io #(.CONF_STR(CONF_STR), .VDNUM(1), .WIDE(1)) hps_io
+    hps_io #(.CONF_STR(CONF_STR), .VDNUM(2), .WIDE(1)) hps_io
     (
         .clk_sys(clk_sys),
         .HPS_BUS(HPS_BUS),
@@ -783,17 +786,57 @@ module emu (
         .PD_o(profile_pd_out),
         .PD_oe_o(profile_pd_oe),
 
-        // HPS sector interface
+        // HPS sector interface (slot 0)
         .sd_lba(sd_lba[0]),
-        .sd_rd(sd_rd),
-        .sd_wr(sd_wr),
-        .sd_ack(sd_ack),
+        .sd_rd(sd_rd[0]),
+        .sd_wr(sd_wr[0]),
+        .sd_ack(sd_ack[0]),
         .sd_buff_addr(sd_buff_addr),
         .sd_buff_dout(sd_buff_dout),
         .sd_buff_din(sd_buff_din[0]),
         .sd_buff_wr(sd_buff_wr),
-        .img_mounted(img_mounted),
+        .img_mounted(img_mounted[0]),
         .img_size(img_size)
+    );
+
+    // ---- Sony 3.5" 400K floppy drive (slot 1) ------------------------------
+    // Attaches to the Lisa FDC's internal (ESFLOPPY) drive boundary exposed by
+    // top.sv. In Sony mode (IO_ROM_SEL=status[8]=0, FLOPPY_SRC=0) top ties
+    // RDA==SNS to the single wire flp_rda that this drive drives.
+    wire [3:0] flp_PH;
+    wire       flp_HDS, flp_MT0, flp_MT1, flp_DR0n, flp_DR1n, flp_WRD, flp_WRQn, flp_PWM;
+    wire       flp_rda;
+    wire       flp_disk_present;
+
+    sony_drive sony_i (
+        .clk_sys(clk_sys),
+        .reset(!n_reset),
+
+        // drive-mechanism boundary (from top.sv ESFLOPPY outputs)
+        .PH(flp_PH),
+        .HDS(flp_HDS),
+        .MT0(flp_MT0),
+        .MT1(flp_MT1),
+        ._DR0(flp_DR0n),
+        ._DR1(flp_DR1n),
+        .WRD(flp_WRD),
+        ._WRQ(flp_WRQn),
+        .rda_serial(flp_rda),
+
+        // media / OSD
+        .img_mounted(img_mounted[1]),
+        .img_size(img_size),
+        .disk_present(flp_disk_present),
+
+        // HPS sector interface (slot 1)
+        .sd_lba(sd_lba[1]),
+        .sd_rd(sd_rd[1]),
+        .sd_wr(sd_wr[1]),
+        .sd_ack(sd_ack[1]),
+        .sd_buff_addr(sd_buff_addr),
+        .sd_buff_dout(sd_buff_dout),
+        .sd_buff_din(sd_buff_din[1]),
+        .sd_buff_wr(sd_buff_wr)
     );
 
     // Power button. The Lisa's COP powers the machine on/off on each power-button
@@ -856,20 +899,20 @@ module emu (
         ._RAS_SRAM(_RAS_SRAM),
         ._CAS_SRAM(_CAS_SRAM),
 
-        // Floppy (unimplemented/stubs for now)
+        // Floppy: internal Sony 400K drive (sony_drive), attached via ESFLOPPY.
         .RAM_SEL(status[4:3]),
         .ESFLOPPY_COMM_BUS(),
-        .RDA_ESFLOPPY(1'b1),
-        .WRD_ESFLOPPY(),
-        .SNS_ESFLOPPY(1'b1),
-        ._WRQ_ESFLOPPY(),
-        .HDS_ESFLOPPY(),
-        .PH_ESFLOPPY(),
-        .MT1_ESFLOPPY(),
-        .MT0_ESFLOPPY(),
-        ._DR1_ESFLOPPY(),
-        ._DR0_ESFLOPPY(),
-        .PWM_ESFLOPPY(),
+        .RDA_ESFLOPPY(flp_rda),   // drive -> Lisa (RDA == SNS in Sony mode)
+        .WRD_ESFLOPPY(flp_WRD),   // Lisa -> drive (write, unused read-only)
+        .SNS_ESFLOPPY(1'b1),      // unused: top re-derives SNS from RDA in Sony mode
+        ._WRQ_ESFLOPPY(flp_WRQn),
+        .HDS_ESFLOPPY(flp_HDS),
+        .PH_ESFLOPPY(flp_PH),
+        .MT1_ESFLOPPY(flp_MT1),
+        .MT0_ESFLOPPY(flp_MT0),
+        ._DR1_ESFLOPPY(flp_DR1n),
+        ._DR0_ESFLOPPY(flp_DR0n),
+        .PWM_ESFLOPPY(flp_PWM),
         .LEFT_ESFLOPPY(1'b1),
         .OK_ESFLOPPY(1'b1),
         .RIGHT_ESFLOPPY(1'b1),

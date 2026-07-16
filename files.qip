@@ -8,6 +8,8 @@ set_global_assignment -name VERILOG_FILE rtl/clock_divider.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug_issp.sv
 set_global_assignment -name VERILOG_FILE rtl/dotck_mmcm.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/profile.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sony_drive.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sony_gcr_encoder.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/rtc_lisa.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ps2_to_usb_hid.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/usb_keyboard_interface.sv
