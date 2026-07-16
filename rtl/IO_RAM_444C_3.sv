@@ -26,7 +26,12 @@ module IO_RAM_444C_3(
     input logic _CS,
     input logic R_W,
     input logic [3:0] D_in,
-    output wire [3:0] D_out
+    output wire [3:0] D_out,
+    // DEBUG (ISSP "LFDR", remove for release): async read port so the shared
+    // 6504<->68000 FDC RAM can be dumped over JTAG. Read-only; cannot disturb
+    // the real ports.
+    input  logic [9:0] dbg_A,
+    output logic [3:0] dbg_D
     );
 
     // The RAM array itself; 1024 x 4 Bits
@@ -35,6 +40,9 @@ module IO_RAM_444C_3(
     `else
         logic [3:0] RAM_array [0:1023];
     `endif
+
+    // DEBUG (ISSP "LFDR", remove for release): JTAG dump read port.
+    assign dbg_D = RAM_array[dbg_A];
 
     logic [3:0] D_out_int;
     assign D_out = (!_CS && R_W) ? D_out_int : 4'bz;

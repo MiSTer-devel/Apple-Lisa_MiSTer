@@ -368,13 +368,26 @@ module IO_board(
         end
     end
 
+    // DEBUG (ISSP "LFDR", remove for release): dump the shared 6504<->68000 FDC
+    // RAM over JTAG. The emulated drive is proven correct up to PSM_out (track
+    // buffer byte-exact, framing holds to the data-field epilogue), so this
+    // splits the remaining chain: if the sector buffer here holds block 0's
+    // 4E FA 00 0E AA AA the read is fine and the bug is 68000-side/mapping; if
+    // it holds some OTHER block's valid data it's a logical-block mapping bug
+    // (which the testbench CANNOT catch -- it checks the buffer with the same
+    // soff math the RTL uses); if it's garbage the bug is PSM_out -> 6504.
+    wire [9:0] dbg_fdr_A;
+    wire [3:0] dbg_fdr_Dlo, dbg_fdr_Dhi;
+
     IO_RAM_444C_3 low_FDC_RAM(
         .A(RA),
         .spoof_88(spoof_88), // Make the RAM always return ROM revision 88 if spoof_88 is set
         ._CS(_FDC_RAM_CS_processed),
         .R_W(RW_FDC_RAM),
         .D_in(RD_in[3:0]), // We'll talk about this in a second
-        .D_out(RD_out[3:0])
+        .D_out(RD_out[3:0]),
+        .dbg_A(dbg_fdr_A),
+        .dbg_D(dbg_fdr_Dlo)
     );
 
     IO_RAM_444C_3 high_FDC_RAM(
@@ -383,7 +396,9 @@ module IO_board(
         ._CS(_FDC_RAM_CS_processed),
         .R_W(RW_FDC_RAM),
         .D_in(RD_in[7:4]), // Same here
-        .D_out(RD_out[7:4])
+        .D_out(RD_out[7:4]),
+        .dbg_A(dbg_fdr_A),
+        .dbg_D(dbg_fdr_Dhi)
     );
 
     // As I said, the RAM is shared with the 68K, so let's make its contents available to the 68K on the systemwide BD bus
@@ -1667,6 +1682,17 @@ module IO_board(
         seq_saw_addr, seq_saw_data, seq_saw_depi, fdir_ever, FDIR, 11'd0,
         seq_valid_cnt, dcap0, dcap1, dcap2, dcap3
     }), .source_clk(clk_sys), .source_ena(1'b1) );
+    // LFDR: FDC-RAM dump. source = 10-bit RAM address, probe [7:0] = that byte
+    // (high nibble from high_FDC_RAM, low from low_FDC_RAM), [17:8] = the address
+    // echoed back so a dump can verify the source actually landed.
+    altsource_probe #(
+        .instance_id ("LFDR"), .probe_width (32), .source_width (10),
+        .source_initial_value ("0"), .enable_metastability ("NO")
+    ) u_fdr_probe ( .source(dbg_fdr_A), .probe({
+        14'd0, dbg_fdr_A, dbg_fdr_Dhi, dbg_fdr_Dlo
+    }), .source_clk(clk_sys), .source_ena(1'b1) );
+    `else
+    assign dbg_fdr_A = 10'd0;   // sim: no JTAG source drives the dump port
     `endif
 
     logic READ_ACK_COP_ungated;
