@@ -1,6 +1,19 @@
 # Apple Lisa Floppy (Sony 400K) — Bring-up Continuation Doc
 
-> ## ⚠ READ THIS FIRST — status as of 2026-07-16 (supersedes §1/§6/§7 below)
+> # ⛔ SUPERSEDED — read `FLOPPY_HANDOFF.md` instead.
+>
+> This file is kept for history only. Its §1, §6 and §7 are **dead theories** (boot-flow
+> event ordering, TACH speed-lock, framing drift, sync-cell tuning) and the "READ THIS
+> FIRST" block below is itself out of date — it points at the P6A→6504→FDC RAM chain,
+> which has since been narrowed much further.
+>
+> **`FLOPPY_HANDOFF.md` is the current, authoritative doc:** what is proven correct, the
+> dead ends not to repeat, the one open question, and the exact next step.
+>
+> Still accurate here: §2 (how the emulation is built), §3 (the standalone testbench),
+> §5 (the first five hardware bugs and their fixes).
+
+> ## ⚠ Status as of 2026-07-16 (superseded — see FLOPPY_HANDOFF.md)
 >
 > The boot-flow / TACH / drift / sync theories in §1, §6 and §7 are all **dead**. The floppy
 > boots mechanically (head steps, insert IRQ fires, address marks frame). **The emulated drive
