@@ -532,10 +532,26 @@ module IO_board(
     reg        seq_in_data=0;     // between a data mark and the next mark/epilogue
     reg        dcap_arm=0;
     reg [2:0]  dcap_n=0;
+    // Per-byte accounting: for EVERY byte the sequencer assembles, how many times
+    // did the 6504 actually latch it? 0 = the CPU missed the byte, 1 = correct,
+    // >=2 = it read the same byte twice (a duplicate corrupts the 5-byte address
+    // field just as badly as a drop). Only counted while the CPU is really
+    // polling, else idle gaps would score as millions of misses. Saturating, so
+    // these can never wrap and mislead the way the 16-bit totals did.
+    reg [31:0] q7_at_last_byte = 32'd0;
+    reg [19:0] byte_miss_cnt = 20'd0, byte_ok_cnt = 20'd0, byte_dup_cnt = 20'd0;
     always @(posedge clk_sys) begin
         if (c16m_en & state_machine_clk_enable) begin
             if (PSM_out[7] & (PSM_out != seq_prev)) begin   // a new assembled byte
                 seq_valid_cnt <= seq_valid_cnt + 16'd1;
+                q7_at_last_byte <= q7_msb_total;
+                if (reading_active) begin
+                    case (q7_msb_total - q7_at_last_byte)
+                        32'd0:   if (~&byte_miss_cnt) byte_miss_cnt <= byte_miss_cnt + 20'd1;
+                        32'd1:   if (~&byte_ok_cnt)   byte_ok_cnt   <= byte_ok_cnt   + 20'd1;
+                        default: if (~&byte_dup_cnt)  byte_dup_cnt  <= byte_dup_cnt  + 20'd1;
+                    endcase
+                end
                 if (seq_r1 == 8'hD5 && seq_r0 == 8'hAA && PSM_out == 8'h96) begin
                     seq_saw_addr <= 1'b1; seq_in_data <= 1'b0;
                 end
@@ -619,6 +635,20 @@ module IO_board(
             q7_prev <= FD_in;
         end
         if (buf_wr_dbg) dbg_bufwr_cnt <= dbg_bufwr_cnt + 16'd1;
+    end
+
+    // Free-running total of valid bytes the 6504 latched, plus an "is it polling
+    // right now" gate. The LSEQ block samples the total at each new PSM_out byte;
+    // the delta = how many times the CPU read THAT byte. 32-bit so the delta is
+    // always meaningful (the old 16-bit counters wrapped, which made a
+    // ratio-of-totals comparison garbage -- ratios came out >1).
+    reg [31:0] q7_msb_total = 32'd0;
+    reg [11:0] rd_active_tmr = 12'd0;         // ~50us @81.5MHz; a byte is 16us
+    wire reading_active = |rd_active_tmr;
+    always @(posedge clk_sys) begin
+        if (q7l_rd_dbg && FD_in[7]) q7_msb_total <= q7_msb_total + 32'd1;
+        if (q7l_rd_dbg)             rd_active_tmr <= 12'hFFF;
+        else if (|rd_active_tmr)    rd_active_tmr <= rd_active_tmr - 12'd1;
     end
 
     // Now for the two LS259 addressable latches that hold the floppy drive control signals
@@ -1771,6 +1801,15 @@ module IO_board(
         .source_initial_value ("0"), .enable_metastability ("NO")
     ) u_6504b_probe ( .source(), .probe({
         q7_msb_cnt, q7_addr_evt_cnt, q7_h3, q7_h2, q7_h1, q7_h0
+    }), .source_clk(clk_sys), .source_ena(1'b1) );
+    // L65C: per-byte accounting of the 6504 vs the sequencer, over the SAME
+    // window. [63:44]=bytes the CPU MISSED [43:24]=bytes read exactly once (OK)
+    // [23:4]=bytes read 2+ times (DUPLICATE). Saturating 20-bit: no wrap.
+    altsource_probe #(
+        .instance_id ("L65C"), .probe_width (64), .source_width (1),
+        .source_initial_value ("0"), .enable_metastability ("NO")
+    ) u_6504c_probe ( .source(), .probe({
+        byte_miss_cnt, byte_ok_cnt, byte_dup_cnt, 4'd0
     }), .source_clk(clk_sys), .source_ena(1'b1) );
     `else
     assign dbg_fdr_A = 10'd0;   // sim: no JTAG source drives the dump port
