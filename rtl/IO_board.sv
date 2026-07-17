@@ -560,6 +560,49 @@ module IO_board(
         end
     end
 
+    // DEBUG (ISSP "L654", remove for release): watch the 6504 itself. Everything
+    // upstream is proven (track buffer byte-exact, framing to the DE AA epilogue,
+    // serializer 524/524, right sector requested AND presented) yet the 6504's
+    // sector buffer never gets good data and it logs ZERO bitslip/checksum errors.
+    // So: is it even reading the shift register, what does it get, and does it
+    // ever store to the buffer?
+    //   Our firmware is the new_io==0 / hardware_id==$A8 build, whose byte-read
+    //   loop is  find_addr: lda q6l / L1281: lda q7l / bpl L1281  -- i.e. it
+    //   polls **q7l ($040E)**, not q6l, spinning until MSB=1 (a valid GCR byte).
+    //   Reading it returns PSM_out via the FD_in mux. If the 6504 never reads it,
+    //   or always gets FF (the mux's fall-through) or MSB=0, that is the bug.
+    //   dbg_pc_6504 maps straight onto the asm listing (6504 ROM is at $1000+),
+    //   so a PC parked at ~$1281 means it is stuck in exactly that spin loop.
+    // Sampled at the 6504's own phi, where MA/RW_FDC/FD_in all correspond.
+    wire fdc_phi_dbg = FDC_counter_clock_enables_rising[2] & c16m_en;
+    wire q7l_rd_dbg  = fdc_phi_dbg && (MA[12:0] == 13'h40E) && RW_FDC;
+    wire q6l_rd_dbg  = fdc_phi_dbg && (MA[12:0] == 13'h40C) && RW_FDC;
+    // the 6504 writing its 524-byte sector buffer ($01F4..$03FF) -- resolves the
+    // "cleared then never filled" vs "never touched since power-up" ambiguity
+    wire buf_wr_dbg  = fdc_phi_dbg && FDC_RAM_addr_select && !RW_FDC &&
+                       (MA[12:0] >= 13'h1F4) && (MA[12:0] <= 13'h3FF);
+
+    reg [15:0] dbg_pc_6504   = 16'd0;   // last ROM fetch address ~= PC
+    reg [15:0] dbg_q7l_cnt   = 16'd0;   // reads of the data register
+    reg [15:0] dbg_q6l_cnt   = 16'd0;
+    reg [15:0] dbg_bufwr_cnt = 16'd0;
+    reg  [7:0] dbg_fd_at_q7l = 8'd0;    // what the 6504 actually got
+    reg  [7:0] dbg_psm_at_q7l= 8'd0;    // what the sequencer had at that instant
+    reg  [7:0] dbg_fd_msb_cnt= 8'd0;    // q7l reads that returned MSB=1 (valid GCR)
+    reg  [7:0] dbg_fd_ff_cnt = 8'd0;    // q7l reads that returned FF (mux fall-through!)
+    always @(posedge clk_sys) begin
+        if (fdc_phi_dbg && MA[12]) dbg_pc_6504 <= MA;
+        if (q6l_rd_dbg) dbg_q6l_cnt <= dbg_q6l_cnt + 16'd1;
+        if (q7l_rd_dbg) begin
+            dbg_q7l_cnt   <= dbg_q7l_cnt + 16'd1;
+            dbg_fd_at_q7l <= FD_in;
+            dbg_psm_at_q7l<= PSM_out;
+            if (FD_in[7])       dbg_fd_msb_cnt <= dbg_fd_msb_cnt + 8'd1;
+            if (FD_in == 8'hFF) dbg_fd_ff_cnt  <= dbg_fd_ff_cnt  + 8'd1;
+        end
+        if (buf_wr_dbg) dbg_bufwr_cnt <= dbg_bufwr_cnt + 16'd1;
+    end
+
     // Now for the two LS259 addressable latches that hold the floppy drive control signals
     // This is pretty simple; they're addressed by MA[3:1] with the data on MA[0] and clocked by lines from a decoder we'll make later
     // One of the latch outputs is an intermediate signal used to form the state machine clock
@@ -1690,6 +1733,24 @@ module IO_board(
         .source_initial_value ("0"), .enable_metastability ("NO")
     ) u_fdr_probe ( .source(dbg_fdr_A), .probe({
         14'd0, dbg_fdr_A, dbg_fdr_Dhi, dbg_fdr_Dlo
+    }), .source_clk(clk_sys), .source_ena(1'b1) );
+    // L654: the 6504 itself. [63:48]=PC (last ROM fetch; maps onto the asm
+    // listing, ROM at $1000+) [47:32]=q7l data-register read count
+    // [31:16]=writes to the $01F4-$03FF sector buffer [15:8]=last FD_in at q7l
+    // [7:0]=PSM_out at that same instant.
+    altsource_probe #(
+        .instance_id ("L654"), .probe_width (64), .source_width (1),
+        .source_initial_value ("0"), .enable_metastability ("NO")
+    ) u_6504_probe ( .source(), .probe({
+        dbg_pc_6504, dbg_q7l_cnt, dbg_bufwr_cnt, dbg_fd_at_q7l, dbg_psm_at_q7l
+    }), .source_clk(clk_sys), .source_ena(1'b1) );
+    // L65B: [31:16]=q6l reads [15:8]=q7l reads that saw MSB=1 [7:0]=q7l reads
+    // that returned FF (the FD_in mux fall-through == 6504 sees no shift reg).
+    altsource_probe #(
+        .instance_id ("L65B"), .probe_width (32), .source_width (1),
+        .source_initial_value ("0"), .enable_metastability ("NO")
+    ) u_6504b_probe ( .source(), .probe({
+        dbg_q6l_cnt, dbg_fd_msb_cnt, dbg_fd_ff_cnt
     }), .source_clk(clk_sys), .source_ena(1'b1) );
     `else
     assign dbg_fdr_A = 10'd0;   // sim: no JTAG source drives the dump port
