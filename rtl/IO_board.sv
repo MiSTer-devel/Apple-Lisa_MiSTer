@@ -440,11 +440,51 @@ module IO_board(
 
     // Clock the shiftreg on C16M, but use state_machine_clk as a clock enable
     logic state_machine_clk_enable;
+
+    // ---------------------------------------------------------------------
+    // Reading the data register clears the shift register.
+    //
+    // The P6A sequencer's only inputs are {state, RDA edge, Q7, Q6, SR_MSB}.
+    // Reading q7l merely re-drives Q7=0 (no edge, no strobe), so the sequencer
+    // cannot tell that the 6504 consumed a byte and can only fall back on a
+    // timed hold. That cannot satisfy both constraints at once: the byte must
+    // stay valid longer than the CPU's ~3.5us poll (or polls miss it) yet be
+    // gone before the CPU polls again (or the same byte is read twice).
+    // Measured, that marginal window cost us 9.0% missed + 6.8% duplicated
+    // bytes (probe L65C). A 5-byte address field then decodes only 0.84^5 =
+    // ~42% of the time, and a 699-byte data field never completes at all --
+    // which is precisely the bug (checksum errors, no sector data ever stored).
+    //
+    // Give the sequencer the positive handshake the timed hold was standing in
+    // for: the byte holds until the CPU reads it, and the read clears it. No
+    // duplicates (it reads back 0 afterwards) and no misses (it stays valid).
+    // Clearing is also exactly what re-frames the next GCR byte, since every
+    // GCR byte begins with a 1 -- the same thing the sequencer's own clear does.
+    //
+    // The 6504 latches FD_in on its phi, and _CLR is SYNCHRONOUS to the
+    // sequencer's clk_en (~250ns apart), so the request is latched until a
+    // clk_en consumes it -- a one-cycle pulse would be missed entirely. The
+    // clear therefore always lands after the CPU has taken the byte.
+    // Only a read that actually TOOK a byte counts as consuming one. The CPU
+    // polls this register continuously while waiting, and most polls find
+    // nothing yet (MSB=0); clearing on those would wipe the half-assembled byte
+    // so the register could never accumulate one at all. (Measured: clearing on
+    // every read killed duplicates but drove misses from 9% to 88%.) Gate on
+    // MSB=1 -- the byte-complete flag the CPU's own "bpl" loop spins on.
+    wire fdc_phi_rd  = FDC_counter_clock_enables_rising[2] & c16m_en;
+    wire data_reg_rd = fdc_phi_rd & RW_FDC & ~MA[0] &
+                       ((MA[12:0] == 13'h40C) | (MA[12:0] == 13'h40E)); // q6l / q7l
+    reg  sr_clr_req = 1'b0;
+    always_ff @(posedge clk_sys) begin
+        if (data_reg_rd & PSM_out[7])                sr_clr_req <= 1'b1;
+        else if (state_machine_clk_enable & c16m_en) sr_clr_req <= 1'b0;
+    end
+
     LS323_shiftreg FDC_state_shiftreg(
         .clk(clk_sys),
         .clk_en(state_machine_clk_enable & c16m_en),
         //.clk(state_machine_clk),
-        ._CLR(PROM_data[3]),
+        ._CLR(PROM_data[3] & ~sr_clr_req),
         ._OE1(_state_machine_OE1),
         ._OE2(MA[0]),
         .S0(PROM_data[1]),
