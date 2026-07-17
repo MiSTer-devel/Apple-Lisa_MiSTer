@@ -38,6 +38,33 @@ c5_pin_model_dump.txt
 *_netlist
 *.cdf
 
+# ---------------------------------------------------------------------------
+# Third-party reference material — NEVER COMMIT.
+# This repo is headed for a public MiSTer-Devel release, and none of this is
+# ours to redistribute.
+#
+# Apple's Lisa source (Computer History Museum, 2023) ships under the "Apple
+# Academic License Agreement" (non-commercial) — see
+# Lisa_Source/Apple Academic License Agreement.txt. Reference only.
+Lisa_Source/
+lisa-source.zip
+__MACOSX/
+
+# Bitsavers hardware docs (Apple copyright) and reverse-engineering refs
+# (refs/ holds lisaio, MacPlus_MiSTer, Apple-IIgs_MiSTer — other people's repos)
+docs/schematics/
+refs/
+references/
+
+# Disk images and software archives (copyrighted; multi-hundred MB)
+*.dc42
+*.dc4
+*.dsk
+*.image
+*.img
+*.zip
+!sys/**/*.zip
+
 # Local simulator/build artifacts
 *.o
 work-obj*.cf
