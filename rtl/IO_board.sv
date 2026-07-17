@@ -590,6 +590,16 @@ module IO_board(
     reg  [7:0] dbg_psm_at_q7l= 8'd0;    // what the sequencer had at that instant
     reg  [7:0] dbg_fd_msb_cnt= 8'd0;    // q7l reads that returned MSB=1 (valid GCR)
     reg  [7:0] dbg_fd_ff_cnt = 8'd0;    // q7l reads that returned FF (mux fall-through!)
+    // THE decisive comparison: run LSEQ's EXACT mark detector, but on the byte
+    // stream the 6504 actually samples at q7l instead of on PSM_out. LSEQ proves
+    // PSM_out carries D5 AA 96 (saw_addr=1) yet find_addr times out, so if this
+    // detector never fires the bug is the 6504's sampling/timing of the register,
+    // not the GCR content. Change-detected (FD_in != prev) exactly like LSEQ,
+    // because the 6504 polls faster than the byte rate and re-reads the same byte.
+    reg  [7:0] q7_r0=0, q7_r1=0, q7_prev=0;
+    reg  [7:0] q7_h0=0, q7_h1=0, q7_h2=0, q7_h3=0;   // last 4 distinct MSB=1 bytes
+    reg [15:0] q7_msb_cnt=0;       // distinct valid bytes the 6504 saw
+    reg [15:0] q7_addr_evt_cnt=0;  // times the 6504's OWN stream showed D5 AA 96
     always @(posedge clk_sys) begin
         if (fdc_phi_dbg && MA[12]) dbg_pc_6504 <= MA;
         if (q6l_rd_dbg) dbg_q6l_cnt <= dbg_q6l_cnt + 16'd1;
@@ -599,6 +609,14 @@ module IO_board(
             dbg_psm_at_q7l<= PSM_out;
             if (FD_in[7])       dbg_fd_msb_cnt <= dbg_fd_msb_cnt + 8'd1;
             if (FD_in == 8'hFF) dbg_fd_ff_cnt  <= dbg_fd_ff_cnt  + 8'd1;
+            if (FD_in[7] && (FD_in != q7_prev)) begin
+                q7_msb_cnt <= q7_msb_cnt + 16'd1;
+                if (q7_r1 == 8'hD5 && q7_r0 == 8'hAA && FD_in == 8'h96)
+                    q7_addr_evt_cnt <= q7_addr_evt_cnt + 16'd1;
+                q7_r1 <= q7_r0; q7_r0 <= FD_in;
+                q7_h3 <= q7_h2; q7_h2 <= q7_h1; q7_h1 <= q7_h0; q7_h0 <= FD_in;
+            end
+            q7_prev <= FD_in;
         end
         if (buf_wr_dbg) dbg_bufwr_cnt <= dbg_bufwr_cnt + 16'd1;
     end
@@ -1744,13 +1762,15 @@ module IO_board(
     ) u_6504_probe ( .source(), .probe({
         dbg_pc_6504, dbg_q7l_cnt, dbg_bufwr_cnt, dbg_fd_at_q7l, dbg_psm_at_q7l
     }), .source_clk(clk_sys), .source_ena(1'b1) );
-    // L65B: [31:16]=q6l reads [15:8]=q7l reads that saw MSB=1 [7:0]=q7l reads
-    // that returned FF (the FD_in mux fall-through == 6504 sees no shift reg).
+    // L65B: the 6504's OWN byte stream, via LSEQ's exact detector.
+    // [63:48]=distinct MSB=1 bytes the 6504 saw [47:32]=times ITS stream showed
+    // D5 AA 96 (compare against LSEQ.saw_addr on PSM_out!) [31:0]=last 4 distinct
+    // valid bytes, newest in [7:0].
     altsource_probe #(
-        .instance_id ("L65B"), .probe_width (32), .source_width (1),
+        .instance_id ("L65B"), .probe_width (64), .source_width (1),
         .source_initial_value ("0"), .enable_metastability ("NO")
     ) u_6504b_probe ( .source(), .probe({
-        dbg_q6l_cnt, dbg_fd_msb_cnt, dbg_fd_ff_cnt
+        q7_msb_cnt, q7_addr_evt_cnt, q7_h3, q7_h2, q7_h1, q7_h0
     }), .source_clk(clk_sys), .source_ena(1'b1) );
     `else
     assign dbg_fdr_A = 10'd0;   // sim: no JTAG source drives the dump port
