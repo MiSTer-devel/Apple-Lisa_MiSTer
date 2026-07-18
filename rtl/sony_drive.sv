@@ -44,8 +44,8 @@ module sony_drive #(
     input  wire        MT1,
     input  wire        _DR0,           // drive select 0 (active low)
     input  wire        _DR1,           // drive select 1 (active low)
-    input  wire        WRD,            // write data   (ignored: read-only phase)
-    input  wire        _WRQ,           // write request(ignored: read-only phase)
+    input  wire        WRD,            // write data (serialized flux from the FDC sequencer)
+    input  wire        _WRQ,           // write request (low = FDC is writing)
     output wire        rda_serial,     // -> top.RDA_ESFLOPPY (RDA == SNS)
 
     // ---- Media / OSD ----
@@ -233,11 +233,18 @@ module sony_drive #(
     // ------------------------------------------------------------------
     (* ramstyle = "M10K" *) reg [15:0] trackbuf [0:4095];
 
-    // write port (SD loader) and read port (GCR encoder) -> inferred dual-port
+    // write port (SD loader + FDC write decoder, loader wins) and read port
+    // (GCR encoder) -> inferred dual-port
     reg  [11:0] load_widx;
     reg         load_we;
     reg  [15:0] load_wdata;
-    always @(posedge clk_sys) if (load_we) trackbuf[load_widx] <= load_wdata;
+    reg  [11:0] wrw_widx;
+    reg         wrw_we;
+    reg  [15:0] wrw_wdata;
+    always @(posedge clk_sys) begin
+        if (load_we)      trackbuf[load_widx] <= load_wdata;
+        else if (wrw_we)  trackbuf[wrw_widx]  <= wrw_wdata;
+    end
 
     // Encoder source-byte selectors -> per-track buffer word/byte. A Lisa sector
     // is 524 bytes: src_offset 0..11 = tags (buffer word 3072 + sector*6 + t/2),
@@ -519,6 +526,237 @@ module sony_drive #(
                                             sense_reg[raddr]; // else -> held status level
 
     // ==================================================================
+    // WRITE PATH: decode the FDC's WRD stream back into sector data and
+    // commit it to the track buffer.
+    //
+    // While _WRQ is low the 6504 firmware (cycle-timed `sta q6h` loops)
+    // serializes GCR bytes through the P6A sequencer onto WRD. We decode it
+    // like real flux: quantize the interval between WRD EDGES (any toggle;
+    // edges <100 clk apart are the two edges of one pulse and the second is
+    // ignored) in write-clock cells of 8 sequencer ticks = 160 clk. An
+    // interval of ~n cells contributes (n-1) zero bits and a 1. Bytes frame
+    // on the leading 1 reaching bit 7 (exactly like the read sequencer).
+    // Byte stream: hunt D5 AA AD, take the sector byte, then 6&2-decode the
+    // 699 GCR bytes (inverse of sony_gcr_encoder's whitening chain) and
+    // write the 524 payload bytes pairwise into the track buffer words.
+    // Address-field writes (format) are ignored for now.
+    // ==================================================================
+    function automatic [6:0] denib;   // {valid, 6-bit value} from a GCR byte
+        input [7:0] g;
+        begin
+            case (g)
+            8'h96: denib={1'b1,6'h00}; 8'h97: denib={1'b1,6'h01}; 8'h9a: denib={1'b1,6'h02}; 8'h9b: denib={1'b1,6'h03};
+            8'h9d: denib={1'b1,6'h04}; 8'h9e: denib={1'b1,6'h05}; 8'h9f: denib={1'b1,6'h06}; 8'ha6: denib={1'b1,6'h07};
+            8'ha7: denib={1'b1,6'h08}; 8'hab: denib={1'b1,6'h09}; 8'hac: denib={1'b1,6'h0a}; 8'had: denib={1'b1,6'h0b};
+            8'hae: denib={1'b1,6'h0c}; 8'haf: denib={1'b1,6'h0d}; 8'hb2: denib={1'b1,6'h0e}; 8'hb3: denib={1'b1,6'h0f};
+            8'hb4: denib={1'b1,6'h10}; 8'hb5: denib={1'b1,6'h11}; 8'hb6: denib={1'b1,6'h12}; 8'hb7: denib={1'b1,6'h13};
+            8'hb9: denib={1'b1,6'h14}; 8'hba: denib={1'b1,6'h15}; 8'hbb: denib={1'b1,6'h16}; 8'hbc: denib={1'b1,6'h17};
+            8'hbd: denib={1'b1,6'h18}; 8'hbe: denib={1'b1,6'h19}; 8'hbf: denib={1'b1,6'h1a}; 8'hcb: denib={1'b1,6'h1b};
+            8'hcd: denib={1'b1,6'h1c}; 8'hce: denib={1'b1,6'h1d}; 8'hcf: denib={1'b1,6'h1e}; 8'hd3: denib={1'b1,6'h1f};
+            8'hd6: denib={1'b1,6'h20}; 8'hd7: denib={1'b1,6'h21}; 8'hd9: denib={1'b1,6'h22}; 8'hda: denib={1'b1,6'h23};
+            8'hdb: denib={1'b1,6'h24}; 8'hdc: denib={1'b1,6'h25}; 8'hdd: denib={1'b1,6'h26}; 8'hde: denib={1'b1,6'h27};
+            8'hdf: denib={1'b1,6'h28}; 8'he5: denib={1'b1,6'h29}; 8'he6: denib={1'b1,6'h2a}; 8'he7: denib={1'b1,6'h2b};
+            8'he9: denib={1'b1,6'h2c}; 8'hea: denib={1'b1,6'h2d}; 8'heb: denib={1'b1,6'h2e}; 8'hec: denib={1'b1,6'h2f};
+            8'hed: denib={1'b1,6'h30}; 8'hee: denib={1'b1,6'h31}; 8'hef: denib={1'b1,6'h32}; 8'hf2: denib={1'b1,6'h33};
+            8'hf3: denib={1'b1,6'h34}; 8'hf4: denib={1'b1,6'h35}; 8'hf5: denib={1'b1,6'h36}; 8'hf6: denib={1'b1,6'h37};
+            8'hf7: denib={1'b1,6'h38}; 8'hf9: denib={1'b1,6'h39}; 8'hfa: denib={1'b1,6'h3a}; 8'hfb: denib={1'b1,6'h3b};
+            8'hfc: denib={1'b1,6'h3c}; 8'hfd: denib={1'b1,6'h3d}; 8'hfe: denib={1'b1,6'h3e}; 8'hff: denib={1'b1,6'h3f};
+            default: denib = 7'd0;
+            endcase
+        end
+    endfunction
+
+    // --- WRD edge -> bit -> byte assembly --------------------------------
+    reg        wrd_d = 1'b0, wrq_d = 1'b1;
+    reg [10:0] wr_ival = 11'h7FF;             // clk since last accepted edge (sat)
+    reg [7:0]  wr_sh = 8'd0;                  // leading-1 framed shift register
+    wire       wr_active = ~wrq_d;
+    reg        wr_byte_stb;                   // one-clk: wr_byte valid
+    reg [7:0]  wr_byte;
+    // field parser
+    localparam WPS_HUNT_D5=3'd0, WPS_AA=3'd1, WPS_AD=3'd2, WPS_SECT=3'd3, WPS_FIELD=3'd4;
+    reg [2:0]  wps = WPS_HUNT_D5;
+    reg [3:0]  wr_sector = 4'd0;
+    reg [9:0]  wr_gcrcnt = 10'd0;             // GCR bytes consumed in the field
+    reg [1:0]  wr_qpos = 2'd0;                // position within a quad
+    reg [9:0]  wr_bytecnt = 10'd0;            // payload bytes emitted (0..523)
+    // inverse whitening chain
+    reg [7:0]  wc1=0, wc2=0, wc3=0;
+    reg        wc2x=0, wc3x=0;
+    reg [5:0]  wq_comb=0, wq_x0=0, wq_x1=0;
+    // 3-byte emit micro-sequence after each completed quad
+    reg [1:0]  wr_emit = 2'd0;                // 0=idle, else bytes left to emit
+    reg [7:0]  wr_b0=0, wr_b1=0, wr_b2=0;
+    // word assembler
+    reg [7:0]  wr_lowbyte = 8'd0;
+    // probes / status
+    reg [7:0]  wrq_falls = 8'd0;
+    reg [15:0] wrd_edges = 16'd0;
+    reg [15:0] wr_gcr_total = 16'd0;
+    reg [7:0]  wr_marks = 8'd0, wr_commits = 8'd0;
+    reg        wr_denib_err = 1'b0;
+    reg [11:0] wr_dirty = 12'd0;              // per-sector dirty flags (for W4)
+
+    wire [6:0] dn = denib(wr_byte);
+    // payload byte target word/bytesel (byte offset = wr_bytecnt: 0..11 tags, 12..523 data)
+    wire       wr_istag  = (wr_bytecnt < 10'd12);
+    wire [9:0] wr_doff   = wr_bytecnt - 10'd12;
+    wire [11:0] wr_word  = wr_istag
+        ? (12'd3072 + {6'd0, wr_sector, 2'b00} + {7'd0, wr_sector, 1'b0} + {9'd0, wr_bytecnt[3:1]})
+        : ({wr_sector, 8'd0} + {4'd0, wr_doff[8:1]});
+    wire       wr_bsel   = wr_istag ? wr_bytecnt[0] : wr_doff[0];
+
+    always @(posedge clk_sys) begin
+        wrd_d <= WRD;
+        wrq_d <= _WRQ;
+        wr_byte_stb <= 1'b0;
+        wrw_we      <= 1'b0;
+
+        if (wrq_d && !_WRQ) begin             // write burst starting
+            wrq_falls <= wrq_falls + 8'd1;
+            wr_ival   <= 11'h7FF;
+            wr_sh     <= 8'd0;
+            wps       <= WPS_HUNT_D5;
+            wr_emit   <= 2'd0;
+        end
+
+        if (wr_active) begin
+            if (~&wr_ival) wr_ival <= wr_ival + 11'd1;
+            if (WRD != wrd_d) begin           // an edge
+                if (wr_ival >= 11'd100) begin // debounce: accept as a flux transition
+                    wrd_edges <= wrd_edges + 16'd1;
+                    wr_ival   <= 11'd0;
+                    // (n_cells-1) zeros then a 1, n_cells = round(ival/160), max 3.
+                    // A byte completes when its leading 1 reaches bit 7 -- possibly
+                    // on one of the ZEROS, in which case this edge's 1 seeds the
+                    // NEXT byte. Only one completion per edge is possible (a fresh
+                    // register can't fill from <=2 remaining bits).
+                    begin : shifter
+                        reg [7:0] t;
+                        t = wr_sh;
+                        if (wr_ival >= 11'd240) begin
+                            t = {t[6:0], 1'b0};
+                            if (t[7]) begin wr_byte <= t; wr_byte_stb <= 1'b1; t = 8'd0; end
+                            if (wr_ival >= 11'd400) begin
+                                t = {t[6:0], 1'b0};
+                                if (t[7]) begin wr_byte <= t; wr_byte_stb <= 1'b1; t = 8'd0; end
+                            end
+                        end
+                        t = {t[6:0], 1'b1};
+                        if (t[7]) begin wr_byte <= t; wr_byte_stb <= 1'b1; t = 8'd0; end
+                        wr_sh <= t;
+                    end
+                end else begin
+                    wr_ival <= 11'd0;         // second edge of one pulse: restart timer
+                end
+            end
+        end
+
+        // --- byte-stream parser ---
+        if (wr_byte_stb) begin
+            wr_gcr_total <= wr_gcr_total + 16'd1;
+            case (wps)
+            WPS_HUNT_D5: if (wr_byte == 8'hD5) wps <= WPS_AA;
+            WPS_AA:      wps <= (wr_byte == 8'hAA) ? WPS_AD : WPS_HUNT_D5;
+            WPS_AD:      if (wr_byte == 8'hAD) begin wps <= WPS_SECT; wr_marks <= wr_marks + 8'd1; end
+                         else wps <= (wr_byte == 8'hD5) ? WPS_AA : WPS_HUNT_D5;
+            WPS_SECT: begin
+                wr_sector  <= dn[3:0];
+                wc1 <= 8'd0; wc2 <= 8'd0; wc3 <= 8'd0; wc2x <= 1'b0; wc3x <= 1'b0;
+                wr_gcrcnt  <= 10'd0;
+                wr_qpos    <= 2'd0;
+                wr_bytecnt <= 10'd0;
+                wps        <= WPS_FIELD;
+            end
+            WPS_FIELD: begin
+                if (!dn[6]) begin             // not a data GCR byte: field over/aborted
+                    wr_denib_err <= wr_denib_err | (wr_gcrcnt < 10'd699);
+                    wps <= WPS_HUNT_D5;
+                end else if (wr_gcrcnt < 10'd699) begin
+                    wr_gcrcnt <= wr_gcrcnt + 10'd1;
+                    case (wr_qpos)
+                    2'd0: begin wq_comb <= dn[5:0]; wr_qpos <= 2'd1; end
+                    2'd1: begin wq_x0   <= dn[5:0]; wr_qpos <= 2'd2; end
+                    2'd2: begin
+                        if (wr_gcrcnt == 10'd698) begin
+                            // final partial group (699 = 174*4 + 3): comb+x0lo+x1lo
+                            // carry the last TWO payload bytes; the 3rd emit slot is
+                            // count-guarded off in the emitter.
+                            begin : unwhiten_tail
+                                reg [7:0] x0, x1, nc1, b0, b1, nc3;
+                                reg [8:0] t3;
+                                x0  = {wq_comb[5:4], wq_x0};
+                                x1  = {wq_comb[3:2], dn[5:0]};
+                                nc1 = {wc1[6:0], wc1[7]};
+                                b0  = x0 ^ nc1;
+                                t3  = {1'b0, wc3} + {1'b0, b0} + {8'd0, wc1[7]};
+                                nc3 = t3[7:0];
+                                b1  = x1 ^ nc3;
+                                wr_b0 <= b0; wr_b1 <= b1; wr_b2 <= 8'd0;
+                                wr_emit <= 2'd3;
+                            end
+                            wps <= WPS_HUNT_D5;   // field done; csum/trailer ignored
+                        end else begin
+                            wq_x1 <= dn[5:0]; wr_qpos <= 2'd3;
+                        end
+                    end
+                    2'd3: begin
+                        // full quad: run the inverse whitening chain
+                        begin : unwhiten
+                            reg [7:0] x0, x1, x2, nc1, b0, b1, b2, nc3, nc2;
+                            reg [8:0] t3, t2;
+                            reg ncx3, ncx2;
+                            x0  = {wq_comb[5:4], wq_x0};
+                            x1  = {wq_comb[3:2], wq_x1};
+                            x2  = {wq_comb[1:0], dn[5:0]};
+                            nc1 = {wc1[6:0], wc1[7]};
+                            b0  = x0 ^ nc1;
+                            t3  = {1'b0, wc3} + {1'b0, b0} + {8'd0, wc1[7]};
+                            ncx3 = t3[8]; nc3 = t3[7:0];
+                            b1  = x1 ^ nc3;
+                            t2  = {1'b0, wc2} + {1'b0, b1} + {8'd0, ncx3};
+                            ncx2 = t2[8]; nc2 = t2[7:0];
+                            b2  = x2 ^ nc2;
+                            wc1 <= nc1 + b2 + {7'd0, ncx2};
+                            wc2 <= nc2;
+                            wc3 <= nc3;
+                            wr_b0 <= b0; wr_b1 <= b1; wr_b2 <= b2;
+                            wr_emit <= 2'd3;
+                        end
+                        wr_qpos <= 2'd0;
+                    end
+                    endcase
+                end
+            end
+            default: wps <= WPS_HUNT_D5;
+            endcase
+        end
+
+        // --- payload byte emitter -> pairwise word writes into trackbuf ---
+        if (wr_emit != 2'd0 && !wr_byte_stb) begin
+            begin : emitter
+                reg [7:0] b;
+                b = (wr_emit == 2'd3) ? wr_b0 : (wr_emit == 2'd2) ? wr_b1 : wr_b2;
+                if (wr_bytecnt < 10'd524) begin
+                    if (!wr_bsel) begin
+                        wr_lowbyte <= b;
+                    end else if (loaded_track == driveTrack && ld_state == LD_IDLE) begin
+                        wrw_widx  <= wr_word;
+                        wrw_wdata <= {b, wr_lowbyte};
+                        wrw_we    <= 1'b1;
+                    end
+                    wr_bytecnt <= wr_bytecnt + 10'd1;
+                    if (wr_bytecnt == 10'd523) begin   // sector complete
+                        wr_commits <= wr_commits + 8'd1;
+                        wr_dirty[wr_sector] <= 1'b1;
+                    end
+                end
+            end
+            wr_emit <= wr_emit - 2'd1;
+        end
+    end
+
+    // ==================================================================
     // DEBUG (ISSP "LFLP", remove for release): floppy bring-up probe+source.
     // SOURCE (32b): [8:0] bit_period override (0=default 163); [12:9] pulse_w
     //   override (0=default); [14:13] phmap (PH<->register mapping select);
@@ -620,14 +858,14 @@ module sony_drive #(
         end
         if (sel_p && !sel && ~&sel_drop_cnt) sel_drop_cnt <= sel_drop_cnt + 2'd1;
     end
+    // LFL2 (repurposed for the WRITE path):
+    // [63:56]wrq_falls [55:48]wr_commits(sectors committed to trackbuf)
+    // [47:32]wrd_edges [31:16]wr_gcr_total(GCR bytes assembled)
+    // [15:8]wr_marks(D5AAAD seen) [7:4]last wr_sector [3]denib_err
+    // [2]any dirty [1:0]wps[1:0]
     wire [63:0] flp2_probe = {
-        raddr_hist3, raddr_hist2, raddr_hist1, raddr_hist0, // [63:48] last 4 distinct regs
-        reg_wr_seen,                                        // [47:32] registers written
-        reg_seen,                                           // [31:16] registers read/addressed
-        exc_cnt,                                            // [15:8]  RDDATA->other excursions
-        exc_last,                                           // [7:4]   register of last excursion
-        sel_drop_cnt,                                       // [3:2]   sel fell while streaming
-        exc_infield                                         // [1:0]   excursions mid-field (!cur_sync)
+        wrq_falls, wr_commits, wrd_edges, wr_gcr_total,
+        wr_marks, wr_sector, wr_denib_err, |wr_dirty, wps[1:0]
     };
 
     // DEBUG (ISSP "LBUF", remove for release): track-buffer readback. The GCR
