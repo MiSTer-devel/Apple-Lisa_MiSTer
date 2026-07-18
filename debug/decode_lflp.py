@@ -59,7 +59,23 @@ def main():
         print(f"  DATA-FIELD capture (first 4 GCR bytes after D5 AA AD): dcap0={bits(v,31,24):02X} dcap1={bits(v,23,16):02X} dcap2={bits(v,15,8):02X} dcap3={bits(v,7,0):02X}")
         print(f"  valid_byte_cnt={bits(v,47,32)}")
         print(f"  saw_addr(D5AA96)={bits(v,63,63)}  saw_data(D5AAAD)={bits(v,62,62)}  saw_data_epilogue(DEAA)={bits(v,61,61)}  FDIR_ever={bits(v,60,60)}  FDIR={bits(v,59,59)}")
-    if not m and not m2 and not m3:
-        print("no LFLP/LFL2/LSEQ probe in input"); sys.exit(1)
+    m4 = re.search(r"L65C\[\d+\]\s*=\s*0x([0-9a-fA-F]+)", data)
+    if m4:
+        v = int(m4.group(1), 16)
+        print(f"L65C = 0x{m4.group(1)}  (per-loop byte accounting; search loop NOT counted)")
+        am, ao, ad = bits(v,63,52), bits(v,51,40), bits(v,39,28)
+        dm, do_, dd = bits(v,27,20), bits(v,19,12), bits(v,11,4)
+        mode = bits(v,1,0)
+        tot_a = am+ao+ad
+        print(f"  ADDR-field loops ($128C-$12D4): MISS={am} OK={ao} DUP={ad}"
+              + (f"  ({100*ao/tot_a:.1f}% OK)" if tot_a else "  (no events)")
+              + ("  [saturated]" if am==4095 or ao==4095 or ad==4095 else ""))
+        tot_d = dm+do_+dd
+        print(f"  DATA-field loop  ($1809-$18A2): MISS={dm} OK={do_} DUP={dd}"
+              + (f"  ({100*do_/tot_d:.1f}% OK)" if tot_d else "  (no events)")
+              + ("  [saturated]" if dm==255 or do_==255 or dd==255 else ""))
+        print(f"  live mode={mode} (0=other 1=search 2=addr 3=data)")
+    if not m and not m2 and not m3 and not m4:
+        print("no LFLP/LFL2/LSEQ/L65C probe in input"); sys.exit(1)
 
 if __name__ == "__main__": main()

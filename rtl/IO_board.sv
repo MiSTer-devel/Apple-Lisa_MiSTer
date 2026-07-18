@@ -539,17 +539,44 @@ module IO_board(
     // polling, else idle gaps would score as millions of misses. Saturating, so
     // these can never wrap and mislead the way the 16-bit totals did.
     reg [31:0] q7_at_last_byte = 32'd0;
-    reg [19:0] byte_miss_cnt = 20'd0, byte_ok_cnt = 20'd0, byte_dup_cnt = 20'd0;
+    // Per-FIRMWARE-LOOP accounting (the split the global 84/9/6.8 number could
+    // not give). Search-loop misses are benign (it is only hunting D5 and will
+    // catch a later one); the ADDRESS-FIELD loops ($128C-$12D4: mark confirm +
+    // 5-byte header + trailer) and the DATA-FIELD read ($1809-$18A2) must catch
+    // every assembled byte exactly once. Classified by fdc_cpu_mode (below).
+    reg [11:0] a_miss_cnt = 12'd0, a_ok_cnt = 12'd0, a_dup_cnt = 12'd0;
+    reg [7:0]  d_miss_cnt = 8'd0,  d_ok_cnt = 8'd0,  d_dup_cnt = 8'd0;
     always @(posedge clk_sys) begin
         if (c16m_en & state_machine_clk_enable) begin
-            if (PSM_out[7] & (PSM_out != seq_prev)) begin   // a new assembled byte
+            // A new assembled byte = MSB RISING edge. The register's MSB drops
+            // while the next byte assembles (verified in sim_p6a), so this
+            // fires once per byte even when ADJACENT BYTES ARE IDENTICAL --
+            // which track-0 address fields are full of (trk=0/side=0/sect=0
+            // all encode to $96, fmt/csum pair to $9A $9A). The old
+            // change-detect (PSM_out != seq_prev) merged those, scoring the
+            // CPU's legitimate second read as a false DUP and masking real
+            // misses -- it contaminated the 84.1/9.0/6.8 global numbers.
+            if (PSM_out[7] & ~seq_prev[7]) begin
                 seq_valid_cnt <= seq_valid_cnt + 16'd1;
-                q7_at_last_byte <= q7_msb_total;
-                if (reading_active) begin
-                    case (q7_msb_total - q7_at_last_byte)
-                        32'd0:   if (~&byte_miss_cnt) byte_miss_cnt <= byte_miss_cnt + 20'd1;
-                        32'd1:   if (~&byte_ok_cnt)   byte_ok_cnt   <= byte_ok_cnt   + 20'd1;
-                        default: if (~&byte_dup_cnt)  byte_dup_cnt  <= byte_dup_cnt  + 20'd1;
+                // Use the PREVIOUS-tick snapshot of the read total, not the
+                // live value: this event fires one tick AFTER the true MSB
+                // rise, and a CPU read landing in that one-tick gap belongs to
+                // the NEW byte. Counting it into the old byte's window
+                // manufactured a paired false MISS+DUP ~1/14 of the time (the
+                // measured 283/320 at ~7-8% was mostly this artifact).
+                q7_at_last_byte <= q7_total_d;
+                if (reading_active && fdc_cpu_mode == 2'd2) begin
+                    case (q7_total_d - q7_at_last_byte)
+                        32'd0:   if (~&a_miss_cnt) a_miss_cnt <= a_miss_cnt + 12'd1;
+                        32'd1:   if (~&a_ok_cnt)   a_ok_cnt   <= a_ok_cnt   + 12'd1;
+                        default: if (~&a_dup_cnt)  a_dup_cnt  <= a_dup_cnt  + 12'd1;
+                    endcase
+                end
+                if (reading_active && fdc_cpu_mode == 2'd3) begin
+                    case (q7_total_d - q7_at_last_byte)
+                        32'd0:   if (~&d_miss_cnt) d_miss_cnt <= d_miss_cnt + 8'd1;
+                        32'd1:   if (~&d_ok_cnt)   d_ok_cnt   <= d_ok_cnt   + 8'd1;
+                        default: if (~&d_dup_cnt)  d_dup_cnt  <= d_dup_cnt  + 8'd1;
                     endcase
                 end
                 if (seq_r1 == 8'hD5 && seq_r0 == 8'hAA && PSM_out == 8'h96) begin
@@ -598,6 +625,27 @@ module IO_board(
     wire buf_wr_dbg  = fdc_phi_dbg && FDC_RAM_addr_select && !RW_FDC &&
                        (MA[12:0] >= 13'h1F4) && (MA[12:0] <= 13'h3FF);
 
+    // DEBUG (ISSP "L65C", remove for release): which firmware loop is the 6504
+    // in right now? Derived from ROM fetches (MA[12] set = $1000+ = ROM ~= PC).
+    // $11xx is the denib_tab DATA fetch issued from inside the read loops, so it
+    // must HOLD the current mode, not clear it.
+    //   0=other  1=search $125F-$128B (missed bytes benign)
+    //   2=addr-field $128C-$12D4 (mark confirm + 5-byte header + trailer)
+    //   3=data-field $1809-$18A2 (699-byte read + checksum + trailer)
+    reg [1:0] fdc_cpu_mode = 2'd0;
+    always @(posedge clk_sys) begin
+        if (fdc_phi_dbg && MA[12]) begin
+            if (MA[12:8] == 5'h12) begin
+                if      (MA[7:0] >= 8'h8C && MA[7:0] <= 8'hD4) fdc_cpu_mode <= 2'd2;
+                else if (MA[7:0] >= 8'h5F && MA[7:0] <= 8'h8B) fdc_cpu_mode <= 2'd1;
+                else                                           fdc_cpu_mode <= 2'd0;
+            end else if (MA[12:8] == 5'h18) begin
+                if      (MA[7:0] >= 8'h09 && MA[7:0] <= 8'hA2) fdc_cpu_mode <= 2'd3;
+                else                                           fdc_cpu_mode <= 2'd0;
+            end else if (MA[12:8] != 5'h11)                    fdc_cpu_mode <= 2'd0;
+        end
+    end
+
     reg [15:0] dbg_pc_6504   = 16'd0;   // last ROM fetch address ~= PC
     reg [15:0] dbg_q7l_cnt   = 16'd0;   // reads of the data register
     reg [15:0] dbg_q6l_cnt   = 16'd0;
@@ -612,10 +660,6 @@ module IO_board(
     // detector never fires the bug is the 6504's sampling/timing of the register,
     // not the GCR content. Change-detected (FD_in != prev) exactly like LSEQ,
     // because the 6504 polls faster than the byte rate and re-reads the same byte.
-    reg  [7:0] q7_r0=0, q7_r1=0, q7_prev=0;
-    reg  [7:0] q7_h0=0, q7_h1=0, q7_h2=0, q7_h3=0;   // last 4 distinct MSB=1 bytes
-    reg [15:0] q7_msb_cnt=0;       // distinct valid bytes the 6504 saw
-    reg [15:0] q7_addr_evt_cnt=0;  // times the 6504's OWN stream showed D5 AA 96
     always @(posedge clk_sys) begin
         if (fdc_phi_dbg && MA[12]) dbg_pc_6504 <= MA;
         if (q6l_rd_dbg) dbg_q6l_cnt <= dbg_q6l_cnt + 16'd1;
@@ -625,16 +669,60 @@ module IO_board(
             dbg_psm_at_q7l<= PSM_out;
             if (FD_in[7])       dbg_fd_msb_cnt <= dbg_fd_msb_cnt + 8'd1;
             if (FD_in == 8'hFF) dbg_fd_ff_cnt  <= dbg_fd_ff_cnt  + 8'd1;
-            if (FD_in[7] && (FD_in != q7_prev)) begin
-                q7_msb_cnt <= q7_msb_cnt + 16'd1;
-                if (q7_r1 == 8'hD5 && q7_r0 == 8'hAA && FD_in == 8'h96)
-                    q7_addr_evt_cnt <= q7_addr_evt_cnt + 16'd1;
-                q7_r1 <= q7_r0; q7_r0 <= FD_in;
-                q7_h3 <= q7_h2; q7_h2 <= q7_h1; q7_h1 <= q7_h0; q7_h0 <= FD_in;
-            end
-            q7_prev <= FD_in;
         end
         if (buf_wr_dbg) dbg_bufwr_cnt <= dbg_bufwr_cnt + 16'd1;
+    end
+
+    // DEBUG (ISSP "L65B", repurposed for CORRUPT-FIELD CAPTURE): timing was
+    // measured NOMINAL (poll 14..50 ticks, hold 15-18, period 64-66 + sync
+    // bytes at the field boundary), so capture WHAT is actually corrupt: keep a
+    // rolling window of the last 5 MSB=1 bytes the 6504 read at q7l, and
+    // FREEZE it the moment the firmware takes the addr-csum-fail branch
+    // ($12FB) -- which only ever happens on track>=1. hb* then holds the raw
+    // GCR of the failing field (trk,sect,side,fmt,csum order on disk).
+    // Excursion-event capture: the corrupt-field capture proved a ~3-bit flux
+    // hole mid-address-field, and LFL2 proved raddr leaves RDDATA (to CSTIN =
+    // 0001 = the LS259's CLEARED state) hundreds of times while the 6504 sits
+    // in its read loop touching nothing. Catch the first {PH,HDS} change during
+    // a critical read: WHO wrote it (MA on the bus, latch strobe) or did
+    // _RESET glitch the latch clear?
+    reg [4:0]  exc_old = 5'd0, exc_new = 5'd0;
+    reg [12:0] exc_ma = 13'd0;
+    reg        exc_rst = 1'b0, exc_strobe = 1'b0, exc_rw = 1'b0;
+    reg        exc_frozen = 1'b0;
+    reg [7:0]  exc_evt_cnt = 8'd0;
+    reg [4:0]  phhds_p = 5'd0;
+    wire [4:0] phhds = {PH[3:0], _HDS};
+    always @(posedge clk_sys) begin
+        phhds_p <= phhds;
+        if (phhds != phhds_p && fdc_cpu_mode == 2'd2) begin
+            if (~&exc_evt_cnt) exc_evt_cnt <= exc_evt_cnt + 8'd1;
+            if (!exc_frozen) begin
+                exc_old    <= phhds_p;
+                exc_new    <= phhds;
+                exc_ma     <= MA[12:0];
+                exc_rst    <= ~_RESET;
+                exc_strobe <= ~FDC_address_decoder_1[0];
+                exc_rw     <= RW_FDC;
+                exc_frozen <= 1'b1;
+            end
+        end
+    end
+    // Sequencer-tick stall detector: ticks should come every 20 clk exactly
+    // while the FDC_counter free-runs. Count gaps > 30 clk during a critical
+    // read loop -- nonzero means the FDC_counter stalled mid-field (the
+    // alternative flux-hole mechanism to the drive-side raddr excursions
+    // counted in LFL2[15:0]).
+    reg [8:0] tick_gap  = 9'd0;
+    reg [7:0] stall_cnt = 8'd0;
+    always @(posedge clk_sys) begin
+        if (c16m_en & state_machine_clk_enable) begin
+            if (tick_gap > 9'd30 && (fdc_cpu_mode == 2'd2 || fdc_cpu_mode == 2'd3)
+                && ~&stall_cnt) stall_cnt <= stall_cnt + 8'd1;
+            tick_gap <= 9'd0;
+        end else if (~&tick_gap) begin
+            tick_gap <= tick_gap + 9'd1;
+        end
     end
 
     // Free-running total of valid bytes the 6504 latched, plus an "is it polling
@@ -643,10 +731,12 @@ module IO_board(
     // always meaningful (the old 16-bit counters wrapped, which made a
     // ratio-of-totals comparison garbage -- ratios came out >1).
     reg [31:0] q7_msb_total = 32'd0;
+    reg [31:0] q7_total_d   = 32'd0;          // snapshot as of the previous seq tick
     reg [11:0] rd_active_tmr = 12'd0;         // ~50us @81.5MHz; a byte is 16us
     wire reading_active = |rd_active_tmr;
     always @(posedge clk_sys) begin
         if (q7l_rd_dbg && FD_in[7]) q7_msb_total <= q7_msb_total + 32'd1;
+        if (c16m_en & state_machine_clk_enable) q7_total_d <= q7_msb_total;
         if (q7l_rd_dbg)             rd_active_tmr <= 12'hFFF;
         else if (|rd_active_tmr)    rd_active_tmr <= rd_active_tmr - 12'd1;
     end
@@ -1792,24 +1882,29 @@ module IO_board(
     ) u_6504_probe ( .source(), .probe({
         dbg_pc_6504, dbg_q7l_cnt, dbg_bufwr_cnt, dbg_fd_at_q7l, dbg_psm_at_q7l
     }), .source_clk(clk_sys), .source_ena(1'b1) );
-    // L65B: the 6504's OWN byte stream, via LSEQ's exact detector.
-    // [63:48]=distinct MSB=1 bytes the 6504 saw [47:32]=times ITS stream showed
-    // D5 AA 96 (compare against LSEQ.saw_addr on PSM_out!) [31:0]=last 4 distinct
-    // valid bytes, newest in [7:0].
+    // L65B (repurposed): PH/HDS excursion-event capture during mode2.
+    // [63:56]=exc_evt_cnt [55:48]=stall_cnt [47:43]=exc_old{PH3..0,_HDS}
+    // [42:38]=exc_new [37:25]=exc_ma [24]=exc_rst(_RESET active!)
+    // [23]=exc_strobe(latch _G asserted) [22]=exc_rw [21]=exc_frozen
+    // [1:0]=fdc_cpu_mode
     altsource_probe #(
         .instance_id ("L65B"), .probe_width (64), .source_width (1),
         .source_initial_value ("0"), .enable_metastability ("NO")
     ) u_6504b_probe ( .source(), .probe({
-        q7_msb_cnt, q7_addr_evt_cnt, q7_h3, q7_h2, q7_h1, q7_h0
+        exc_evt_cnt, stall_cnt, exc_old, exc_new, exc_ma,
+        exc_rst, exc_strobe, exc_rw, exc_frozen, 19'd0, fdc_cpu_mode
     }), .source_clk(clk_sys), .source_ena(1'b1) );
-    // L65C: per-byte accounting of the 6504 vs the sequencer, over the SAME
-    // window. [63:44]=bytes the CPU MISSED [43:24]=bytes read exactly once (OK)
-    // [23:4]=bytes read 2+ times (DUPLICATE). Saturating 20-bit: no wrap.
+    // L65C: per-byte accounting of the 6504 vs the sequencer, SPLIT BY FIRMWARE
+    // LOOP (search-loop bytes are intentionally NOT counted -- misses there are
+    // benign). Saturating counters, no wrap.
+    //   ADDR-field loops ($128C-$12D4): [63:52]=MISSED [51:40]=OK [39:28]=DUP (12-bit)
+    //   DATA-field loop  ($1809-$18A2): [27:20]=MISSED [19:12]=OK [11:4]=DUP  (8-bit)
+    //   [1:0]=live fdc_cpu_mode (0=other 1=search 2=addr 3=data)
     altsource_probe #(
         .instance_id ("L65C"), .probe_width (64), .source_width (1),
         .source_initial_value ("0"), .enable_metastability ("NO")
     ) u_6504c_probe ( .source(), .probe({
-        byte_miss_cnt, byte_ok_cnt, byte_dup_cnt, 4'd0
+        a_miss_cnt, a_ok_cnt, a_dup_cnt, d_miss_cnt, d_ok_cnt, d_dup_cnt, 2'd0, fdc_cpu_mode
     }), .source_clk(clk_sys), .source_ena(1'b1) );
     `else
     assign dbg_fdr_A = 10'd0;   // sim: no JTAG source drives the dump port

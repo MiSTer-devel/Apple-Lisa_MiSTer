@@ -444,7 +444,13 @@ module sony_drive #(
     // Self-sync bytes get extra cells (default 10 = 0xFF + 2 zero cells, the gap
     // the FDC sequencer needs to establish byte framing); tunable via source to
     // find the count that locks the frame (watch LSEQ.saw_addr). Normal = 8.
-    wire [3:0] sync_cells_eff = (sync_cells_ovr != 4'd0) ? sync_cells_ovr : 4'd9;
+    // Default 11 -> 12-cell self-sync bytes. 10-cell (value 9) is the Sony
+    // nominal, but the 6504 firmware deselects RDDATA for ~30 CPU cycles
+    // (S13cd re-select) between the address field and the data-mark hunt,
+    // costing the sequencer ~1 sync byte of re-framing; at 10 cells the
+    // remaining gap was marginal and find_data_header timed out (~half the
+    // attempts, err $48). Measured on hw: 12-cell syncs -> $48 = 0.
+    wire [3:0] sync_cells_eff = (sync_cells_ovr != 4'd0) ? sync_cells_ovr : 4'd11;
     wire [3:0] cells_last = cur_sync ? sync_cells_eff : 4'd7;
 
     always @(posedge clk_sys) begin
@@ -465,8 +471,18 @@ module sony_drive #(
             end
 
             if (active) begin
-                // flux pulse at start of a bit cell if the current bit is 1
-                if (bit_div < pulse_w_eff && cell_idx <= cells_last && shreg[7])
+                // flux pulse at start of a bit cell if the current bit is 1.
+                // At a BYTE boundary shreg still holds the old byte's bit0 for
+                // one clk (load_next latches enc_odata this cycle), so use the
+                // incoming byte's bit7 directly: without this, the first pulse
+                // after a 0-ending byte started 1 clk late and was only 19 clk
+                // wide -- narrower than the FDC sequencer's exactly-20-clk
+                // sample grid, so at ~1/20 of cell phases the pulse fell in the
+                // blind spot and the byte's leading '1' vanished (a 3-bit slip
+                // after absorbing the leading zeros). That was the intermittent
+                // track/sector-deterministic address-field corruption on hw.
+                if (bit_div < pulse_w_eff && cell_idx <= cells_last &&
+                    (load_next ? enc_odata[7] : shreg[7]))
                     flux <= 1'b1;
 
                 if (bit_div >= bit_period_eff - 9'd1) begin
@@ -578,11 +594,36 @@ module sony_drive #(
             raddr_hist1 <= raddr_hist0; raddr_hist0 <= raddr;
         end
     end
+    // rda_serial is ONE multiplexed line: any excursion of raddr away from
+    // RDDATA while the drive streams robs the FDC sequencer of flux for the
+    // excursion's duration (the hardware L65B capture shows a ~3-bit-cell hole
+    // mid-address-field on track 1 = exactly such a theft). Count them, note
+    // the register they went to, and whether the serializer was mid-FIELD
+    // (!cur_sync = an address/data byte was being emitted). Also count sel
+    // drops (rda_serial forces idle-high when deselected).
+    wire raddr_is_rd = (raddr == RDDATA0) || (raddr == RDDATA1);
+    reg        raddr_was_rd = 1'b0, sel_p = 1'b0;
+    reg [7:0]  exc_cnt = 8'd0;
+    reg [3:0]  exc_last = 4'd0;
+    reg [1:0]  exc_infield = 2'd0, sel_drop_cnt = 2'd0;
+    always @(posedge clk_sys) begin
+        sel_p <= sel;
+        if (sel) raddr_was_rd <= raddr_is_rd;
+        if (sel && raddr_was_rd && !raddr_is_rd) begin
+            if (~&exc_cnt) exc_cnt <= exc_cnt + 8'd1;
+            exc_last <= raddr;
+            if (!cur_sync && ~&exc_infield) exc_infield <= exc_infield + 2'd1;
+        end
+        if (sel_p && !sel && ~&sel_drop_cnt) sel_drop_cnt <= sel_drop_cnt + 2'd1;
+    end
     wire [63:0] flp2_probe = {
         raddr_hist3, raddr_hist2, raddr_hist1, raddr_hist0, // [63:48] last 4 distinct regs
         reg_wr_seen,                                        // [47:32] registers written
         reg_seen,                                           // [31:16] registers read/addressed
-        16'd0                                               // [15:0]  spare
+        exc_cnt,                                            // [15:8]  RDDATA->other excursions
+        exc_last,                                           // [7:4]   register of last excursion
+        sel_drop_cnt,                                       // [3:2]   sel fell while streaming
+        exc_infield                                         // [1:0]   excursions mid-field (!cur_sync)
     };
 
     // DEBUG (ISSP "LBUF", remove for release): track-buffer readback. The GCR

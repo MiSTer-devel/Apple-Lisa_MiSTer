@@ -166,7 +166,15 @@ module sony_gcr_encoder (
    reg [7:0]  c3;
    reg 	      c3x;
 
-   wire       nibbler_reset = (state == STATE_DHDR);
+   // Reset during the SYN1 gap so the nibbler can PRIME during DHDR's 4
+   // bytes (D5 AA AD sect). The port had kept the MacPlus STATE_DPRE, whose 4
+   // emitted bytes were only valid on the Mac because they carried the tail of
+   // its zero-tag DZRO region; with real Lisa tags in the payload they became
+   // a spurious all-zero GCR quad prepended to every data field, shifting the
+   // whole 699-byte payload +4 bytes -- the 6504 then read the field cleanly
+   // but its trailer check landed in the checksum bytes: err $49 on EVERY
+   // sector, the boot-killing bug.
+   wire       nibbler_reset = (state == STATE_SYN1);
    reg [1:0]  cnt;
 
    reg [7:0] nib_xor_0;
@@ -177,7 +185,7 @@ module sony_gcr_encoder (
    // only three bytes are read while four bytes are written due
    // to 6:2 encoding
    // Lisa: 524-byte payload (12 tags + 512 data) -> 699 GCR data bytes.
-   wire strobe = ((state == STATE_DPRE) ||
+   wire strobe = ((state == STATE_DHDR) ||
 		    ((state == STATE_DATA) && (count < 699-4-1)))
 					&& (cnt != 3);
 
@@ -195,7 +203,7 @@ always @(posedge clk or posedge nibbler_reset) begin
 		nib_xor_0 <= 8'h00;
 		nib_xor_1 <= 8'h00;
 		nib_xor_2 <= 8'h00;
-   end else if(ready && ((state == STATE_DPRE) || (state == STATE_DATA))) begin
+   end else if(ready && ((state == STATE_DHDR) || (state == STATE_DATA))) begin
 		cnt <= cnt + 2'd1;
 
 		// memory read during cnt 0-3
@@ -288,7 +296,7 @@ always @(posedge clk or posedge rst) begin
    	   // send 4 bytes data block hdr
 			STATE_DHDR: begin
 				if(count == 3) begin
-					state <= STATE_DPRE;   // Lisa: no 0x96 preamble; tags are in the 524B payload
+					state <= STATE_DATA;   // Lisa: no 0x96 preamble, no DPRE -- pipeline primes during DHDR
 					count <= 10'd0;
 				end
 			end

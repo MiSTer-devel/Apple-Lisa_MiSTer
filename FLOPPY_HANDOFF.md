@@ -1,6 +1,23 @@
 # Apple Lisa Sony 400K Floppy — Handoff
 
-**Status: not working. One bug left, tightly bounded, not yet identified.**
+**STATUS 2026-07-17: SOLVED — LisaTest 2.2 boots from the emulated floppy at all RTL
+defaults.** Three bugs, all in the DRIVE side (the FDC/6504/P6A chain was innocent):
+1. `sony_drive.sv` serializer: byte-boundary flux pulse 1 clk late → 19-clk wide →
+   intermittently vanished in the sequencer's exact-20-clk sample grid → 3-bit slips
+   (the track/sector-deterministic addr-field `$4F` errors). Fixed: pulse uses
+   `load_next ? enc_odata[7] : shreg[7]`.
+2. `sony_gcr_encoder.sv`: leftover MacPlus STATE_DPRE emitted a spurious all-zero GCR
+   quad at the head of every data field (+4-byte payload shift → trailer check landed
+   in the csum → `$49` on every sector; the tb's offset-sweeping decoder masked it —
+   its own output said "start quad @mark+8", correct is @mark+4). Fixed: nibbler primes
+   during DHDR, no DPRE.
+3. `sony_drive.sv`: sync_cells default 9→11 (12-cell self-sync) — the firmware's S13cd
+   RDDATA re-select between addr and data fields costs ~1 sync byte of re-framing;
+   10-cell syncs made find_data_header time out half the time (`$48`).
+The P6A PROM swap (§4) is MOOT. §2's per-byte loss numbers were instrumentation
+artifacts (fixed: MSB-rise events + 1-tick snapshot). Historical content below.
+
+**Original handoff (superseded):**
 **Read §1 and §2 before touching anything. Most of the obvious theories are already dead.**
 
 Branch: `floppy-datafield-debug` (both repos, see §9). Working trees clean.
