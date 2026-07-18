@@ -51,6 +51,7 @@ module sony_drive #(
     // ---- Media / OSD ----
     input  wire        img_mounted,    // slot-1 mount pulse
     input  wire [63:0] img_size,
+    input  wire        img_readonly,   // hps_io: mounted read-only (valid at the mount pulse)
     output wire        disk_present,   // status LED / OSD
 
     // ---- SD/HPS (slot 1) ----
@@ -96,6 +97,7 @@ module sony_drive #(
     reg [6:0]  driveTrack;
     reg        tach_q;      // TACH kept separate (driven by its own always block)
     reg        disk_in = 1'b0;  // disk-in-place latch (survives CPU reset; see below)
+    reg        wprot   = 1'b1;  // write-protect latch (default protected until a mount says otherwise)
 
     localparam DIRTN   = 4'd0;  // R/W step direction (0=toward 79, 1=toward 0)
     localparam CSTIN   = 4'd1;  // R disk-in-place (1 = no disk)
@@ -124,7 +126,7 @@ module sony_drive #(
         1'b0,                  //  6 switched
         ~(driveTrack == 7'd0), //  5 TK0
         driveRegs[MOTORON],    //  4 MOTORON
-        1'b0,                  //  3 WRTPRT (0 = protected: read-only phase)
+        ~wprot,                //  3 WRTPRT (0 = protected; from hps_io img_readonly)
         1'b1,                  //  2 STEP complete
         ~disk_present,        //  1 CSTIN disk-in-place (1 = no disk)
         driveRegs[DIRTN]       //  0 DIRTN
@@ -152,8 +154,10 @@ module sony_drive #(
 
         if (img_mounted)        mnt_dly <= 17'd1;
         else if (mnt_dly != 0)  mnt_dly <= mnt_dly + 17'd1;
-        if (mnt_dly == 17'h1FFFF) disk_in <= img_size_nz;
-        else if (eject_wr)        disk_in <= 1'b0;
+        if (mnt_dly == 17'h1FFFF) begin
+            disk_in <= img_size_nz;
+            wprot   <= img_readonly;   // stable since the mount pulse
+        end else if (eject_wr)    disk_in <= 1'b0;
     end
 
     // ------------------------------------------------------------------

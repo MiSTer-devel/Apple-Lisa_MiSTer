@@ -189,6 +189,7 @@ module emu (
     wire        sd_buff_wr;
     wire  [1:0] img_mounted;
     wire [63:0] img_size;
+    wire        img_readonly;
 
     hps_io #(.CONF_STR(CONF_STR), .VDNUM(2), .WIDE(1)) hps_io
     (
@@ -210,6 +211,7 @@ module emu (
 
         .img_mounted(img_mounted),
         .img_size(img_size),
+        .img_readonly(img_readonly),
 
         .ioctl_download(dio_download),
         .ioctl_index(dio_index),
@@ -826,6 +828,7 @@ module emu (
         // media / OSD
         .img_mounted(img_mounted[1]),
         .img_size(img_size),
+        .img_readonly(img_readonly),
         .disk_present(flp_disk_present),
 
         // HPS sector interface (slot 1)
