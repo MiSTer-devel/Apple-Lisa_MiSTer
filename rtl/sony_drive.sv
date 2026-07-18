@@ -57,16 +57,14 @@ module sony_drive #(
     // ---- SD/HPS (slot 1) ----
     output reg  [31:0] sd_lba,
     output reg         sd_rd,
-    output wire        sd_wr,          // unused (read-only) -> 0
+    output reg         sd_wr,          // dirty-sector writeback (W4)
     input  wire        sd_ack,
     input  wire  [7:0] sd_buff_addr,
     input  wire [15:0] sd_buff_dout,
-    output wire [15:0] sd_buff_din,    // unused (read-only)
+    output wire [15:0] sd_buff_din,    // writeback block cache readout
     input  wire        sd_buff_wr
 );
 
-    assign sd_wr       = 1'b0;
-    assign sd_buff_din = 16'h0000;
 
     // ------------------------------------------------------------------
     // Drive select / register addressing (live-tunable via the LFLP JTAG source
@@ -315,8 +313,10 @@ module sony_drive #(
     wire [11:0] data_cnt = {spt, 8'd0};                            // spt*256 data words
     wire [11:0] tag_cnt  = {6'd0, spt, 2'b00} + {7'd0, spt, 1'b0}; // spt*6 tag words
 
-    localparam LD_IDLE=3'd0, LD_SETUP=3'd1, LD_REQ=3'd2, LD_STREAM=3'd3, LD_BLKDONE=3'd4;
-    reg [2:0]  ld_state;
+    localparam LD_IDLE=4'd0, LD_SETUP=4'd1, LD_REQ=4'd2, LD_STREAM=4'd3, LD_BLKDONE=4'd4,
+               FB_SETUP=4'd8, FB_RDREQ=4'd9, FB_RDSTR=4'd10, FB_PATCH=4'd11,
+               FB_WRREQ=4'd12, FB_WRSTR=4'd13;
+    reg [3:0]  ld_state;
     reg        job;                          // 0 = data, 1 = tags
     reg [15:0] cur_block;
     reg [7:0]  skip_left;
@@ -343,13 +343,54 @@ module sony_drive #(
         if (sd_ack)             sdack_ever <= 1'b1;
     end
 
+    // ---- W4: dirty-sector writeback to the DC42 image -----------------
+    // A written sector is not block-aligned in the file (84-byte header), so
+    // each flush is a read-modify-write: fetch the file block into a byte
+    // cache, patch the bytes belonging to the sector from the track buffer,
+    // and write the block back. Jobs per sector: data block s_abs (bytes
+    // 84..511 = data 0..427), block s_abs+1 (0..83 = data 428..511), and the
+    // 12 tag bytes (1 or 2 blocks in the tag area at byte 409684).
+    reg [7:0] wb_even [0:255];
+    reg [7:0] wb_odd  [0:255];
+    reg [7:0] wb_evq, wb_odq;
     always @(posedge clk_sys) begin
-        sd_ack_d <= sd_ack;
-        load_we  <= 1'b0;
+        wb_evq <= wb_even[sd_buff_addr];
+        wb_odq <= wb_odd[sd_buff_addr];
+    end
+    assign sd_buff_din = {wb_odq, wb_evq};
+
+    reg  [3:0] fb_sector = 4'd0;
+    reg  [2:0] fb_job = 3'd0;
+    reg [19:0] fb_lba = 20'd0;
+    reg  [9:0] fb_lo = 10'd0, fb_hi = 10'd0, fb_i = 10'd0, fb_soff_cur = 10'd0;
+    reg  [3:0] fb_len1 = 4'd0;
+    reg        fb_istag = 1'b0;
+    reg  [1:0] fb_ph = 2'd0;
+    reg [11:0] fb_raddr = 12'd0;
+    wire [15:0] fb_q;
+    reg        fb_clr_stb = 1'b0;
+    reg  [3:0] fb_clr_sec = 4'd0;
+    reg  [7:0] fb_flushed = 8'd0;              // sectors flushed (probe)
+
+    wire [9:0]  fb_sabs    = soff + {6'd0, fb_sector};
+    wire [19:0] fb_tagaddr = 20'd409684 + {7'd0, fb_sabs, 3'b000}
+                                        + {8'd0, fb_sabs, 2'b00};   // +s_abs*12
+    wire [3:0]  fb_pick =
+        wr_dirty[0]?4'd0 : wr_dirty[1]?4'd1 : wr_dirty[2]?4'd2 : wr_dirty[3]?4'd3 :
+        wr_dirty[4]?4'd4 : wr_dirty[5]?4'd5 : wr_dirty[6]?4'd6 : wr_dirty[7]?4'd7 :
+        wr_dirty[8]?4'd8 : wr_dirty[9]?4'd9 : wr_dirty[10]?4'd10 : 4'd11;
+    wire fb_ok = (wr_dirty != 12'd0) && (wr_settle == 20'd0) && !wr_active
+                 && disk_in && !wprot;
+
+    always @(posedge clk_sys) begin
+        sd_ack_d   <= sd_ack;
+        load_we    <= 1'b0;
+        fb_clr_stb <= 1'b0;
 
         if (reset) begin
             ld_state     <= LD_IDLE;
             sd_rd        <= 1'b0;
+            sd_wr        <= 1'b0;
             sd_lba       <= 32'd0;
             job          <= 1'b0;
             loaded_track <= 7'd127;
@@ -360,6 +401,119 @@ module sony_drive #(
                         ld_track <= driveTrack;   // latch the track for this load
                         job      <= 1'b0;
                         ld_state <= LD_SETUP;
+                    end else if (fb_ok) begin
+                        fb_sector <= fb_pick;
+                        fb_job    <= 3'd0;
+                        ld_state  <= FB_SETUP;
+                    end
+                end
+
+                FB_SETUP: begin
+                    fb_ph <= 2'd0;
+                    case (fb_job)
+                    3'd0: begin
+                        fb_lba <= {10'd0, fb_sabs};             // data block s_abs
+                        fb_lo  <= 10'd84;  fb_hi <= 10'd512;
+                        fb_soff_cur <= 10'd0;  fb_istag <= 1'b0;
+                        ld_state <= FB_RDREQ;
+                    end
+                    3'd1: begin
+                        fb_lba <= {10'd0, fb_sabs} + 20'd1;     // data spill block
+                        fb_lo  <= 10'd0;   fb_hi <= 10'd84;
+                        fb_soff_cur <= 10'd428; fb_istag <= 1'b0;
+                        ld_state <= FB_RDREQ;
+                    end
+                    3'd2: begin
+                        fb_lba <= fb_tagaddr[19:9];             // tag block
+                        fb_lo  <= {1'b0, fb_tagaddr[8:0]};
+                        fb_len1 <= (fb_tagaddr[8:0] <= 9'd500) ? 4'd12
+                                 : (4'd0 - fb_tagaddr[3:0]);    // 16-off[3:0] = 512-off (off>=501)
+                        fb_hi  <= {1'b0, fb_tagaddr[8:0]} +
+                                  ((fb_tagaddr[8:0] <= 9'd500) ? 10'd12
+                                   : (10'd512 - {1'b0, fb_tagaddr[8:0]}));
+                        fb_soff_cur <= 10'd0;  fb_istag <= 1'b1;
+                        ld_state <= FB_RDREQ;
+                    end
+                    3'd3: begin
+                        if (fb_len1 == 4'd12) begin             // no straddle: done
+                            fb_clr_stb <= 1'b1; fb_clr_sec <= fb_sector;
+                            fb_flushed <= fb_flushed + 8'd1;
+                            ld_state   <= LD_IDLE;
+                        end else begin
+                            fb_lba <= fb_tagaddr[19:9] + 20'd1;
+                            fb_lo  <= 10'd0;
+                            fb_hi  <= 10'd12 - {6'd0, fb_len1};
+                            fb_soff_cur <= {6'd0, fb_len1}; fb_istag <= 1'b1;
+                            ld_state <= FB_RDREQ;
+                        end
+                    end
+                    default: begin
+                        fb_clr_stb <= 1'b1; fb_clr_sec <= fb_sector;
+                        fb_flushed <= fb_flushed + 8'd1;
+                        ld_state   <= LD_IDLE;
+                    end
+                    endcase
+                end
+
+                FB_RDREQ: begin
+                    if (!sd_ack) begin
+                        sd_lba   <= {12'd0, fb_lba};
+                        sd_rd    <= 1'b1;
+                        ld_state <= FB_RDSTR;
+                    end
+                end
+
+                FB_RDSTR: begin
+                    if (sd_ack && sd_buff_wr) begin
+                        wb_even[sd_buff_addr] <= sd_buff_dout[7:0];
+                        wb_odd [sd_buff_addr] <= sd_buff_dout[15:8];
+                    end
+                    if (sd_ack_d && !sd_ack) begin
+                        sd_rd    <= 1'b0;
+                        fb_i     <= fb_lo;
+                        fb_ph    <= 2'd0;
+                        ld_state <= FB_PATCH;
+                    end
+                end
+
+                FB_PATCH: begin
+                    if (fb_i >= fb_hi) begin
+                        ld_state <= FB_WRREQ;
+                    end else begin
+                        case (fb_ph)
+                        2'd0: begin
+                            fb_raddr <= fb_istag
+                                ? (12'd3072 + {6'd0, fb_sector, 2'b00}
+                                            + {7'd0, fb_sector, 1'b0}
+                                            + {9'd0, fb_soff_cur[3:1]})
+                                : ({fb_sector, 8'd0} + {4'd0, fb_soff_cur[9:2], fb_soff_cur[1]});
+                            fb_ph <= 2'd1;
+                        end
+                        2'd1: fb_ph <= 2'd2;    // fb_q loading
+                        default: begin
+                            if (fb_i[0]) wb_odd [fb_i[9:1]] <= fb_soff_cur[0] ? fb_q[15:8] : fb_q[7:0];
+                            else         wb_even[fb_i[9:1]] <= fb_soff_cur[0] ? fb_q[15:8] : fb_q[7:0];
+                            fb_i        <= fb_i + 10'd1;
+                            fb_soff_cur <= fb_soff_cur + 10'd1;
+                            fb_ph       <= 2'd0;
+                        end
+                        endcase
+                    end
+                end
+
+                FB_WRREQ: begin
+                    if (!sd_ack) begin
+                        sd_lba   <= {12'd0, fb_lba};
+                        sd_wr    <= 1'b1;
+                        ld_state <= FB_WRSTR;
+                    end
+                end
+
+                FB_WRSTR: begin
+                    if (sd_ack_d && !sd_ack) begin
+                        sd_wr    <= 1'b0;
+                        fb_job   <= fb_job + 3'd1;
+                        ld_state <= FB_SETUP;
                     end
                 end
 
@@ -595,7 +749,8 @@ module sony_drive #(
     reg [15:0] wr_gcr_total = 16'd0;
     reg [7:0]  wr_marks = 8'd0, wr_commits = 8'd0;
     reg        wr_denib_err = 1'b0;
-    reg [11:0] wr_dirty = 12'd0;              // per-sector dirty flags (for W4)
+    reg [11:0] wr_dirty = 12'd0;              // per-sector dirty flags
+    reg [19:0] wr_settle = 20'd0;             // ~10ms since last write activity
 
     wire [6:0] dn = denib(wr_byte);
     // payload byte target word/bytesel (byte offset = wr_bytecnt: 0..11 tags, 12..523 data)
@@ -611,6 +766,9 @@ module sony_drive #(
         wrq_d <= _WRQ;
         wr_byte_stb <= 1'b0;
         wrw_we      <= 1'b0;
+        if (fb_clr_stb) wr_dirty[fb_clr_sec] <= 1'b0;
+        if (wr_active)       wr_settle <= 20'd815000;      // ~10ms @81.5MHz
+        else if (|wr_settle) wr_settle <= wr_settle - 20'd1;
 
         if (wrq_d && !_WRQ) begin             // write burst starting
             wrq_falls <= wrq_falls + 8'd1;
@@ -865,7 +1023,7 @@ module sony_drive #(
     // [2]any dirty [1:0]wps[1:0]
     wire [63:0] flp2_probe = {
         wrq_falls, wr_commits, wrd_edges, wr_gcr_total,
-        wr_marks, wr_sector, wr_denib_err, |wr_dirty, wps[1:0]
+        fb_flushed, wr_sector, wr_denib_err, |wr_dirty, wps[1:0]
     };
 
     // DEBUG (ISSP "LBUF", remove for release): track-buffer readback. The GCR
@@ -876,9 +1034,13 @@ module sony_drive #(
     // buffer back over JTAG and diff it against the image to find where the real
     // HPS SD path diverges. dbg_word_sel selects a word; the read port is
     // separate from the encoder's so it cannot perturb the live read.
-    wire [11:0] dbg_word_sel = buf_src[11:0];
+    // shared with the W4 flush engine (fb_raddr wins while a flush is active;
+    // the JTAG dump is never used concurrently with writes)
+    wire fb_porting = (ld_state == FB_PATCH);
+    wire [11:0] dbg_word_sel = fb_porting ? fb_raddr : buf_src[11:0];
     reg  [15:0] dbg_rd_word;
     always @(posedge clk_sys) dbg_rd_word <= trackbuf[dbg_word_sel];
+    assign fb_q = dbg_rd_word;
 
     wire [63:0] buf_probe = {
         14'd0,
