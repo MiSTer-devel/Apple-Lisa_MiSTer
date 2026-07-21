@@ -1242,7 +1242,7 @@ scc_async_fifo #(.DW(8), .AW(2)) u_tx_fifo_a (
     .wen(tx_fifo_wen_a && !tx_fifo_wfull_a),
     .wdata(data_in), .wfull(tx_fifo_wfull_a), .wempty(tx_fifo_wempty_a),
     .rclk(sclk_a), .rrst_n(sreset_n_a & ~rst_a_sclk),
-    .ren(tx_fifo_ren_a_s),
+    .ren(tx_fifo_ren_a_s && sclk_a_en),   // gate: sclk-domain pulse is held across the enable gap
     .rdata(tx_fifo_rdata_a), .rempty(tx_fifo_rempty_a)
 );
 
@@ -1251,13 +1251,13 @@ scc_async_fifo #(.DW(8), .AW(2)) u_tx_fifo_b (
     .wen(tx_fifo_wen_b && !tx_fifo_wfull_b),
     .wdata(data_in), .wfull(tx_fifo_wfull_b), .wempty(tx_fifo_wempty_b),
     .rclk(sclk_b), .rrst_n(sreset_n_b & ~rst_b_sclk),
-    .ren(tx_fifo_ren_b_s),
+    .ren(tx_fifo_ren_b_s && sclk_b_en),   // gate: sclk-domain pulse is held across the enable gap
     .rdata(tx_fifo_rdata_b), .rempty(tx_fifo_rempty_b)
 );
 
 scc_async_fifo #(.DW(8), .AW(2)) u_rx_fifo_a (
     .wclk(sclk_a), .wrst_n(sreset_n_a & ~rst_a_sclk),
-    .wen(rx_fifo_wen_a_s && !rx_fifo_wfull_a),
+    .wen(rx_fifo_wen_a_s && !rx_fifo_wfull_a && sclk_a_en),   // gate: one write per byte (else the held pulse fills the 4-deep FIFO -> 4x chars)
     .wdata(rx_fifo_wdata_a_s), .wfull(rx_fifo_wfull_a),
     .wempty(/*unused*/),
     .rclk(clk),    .rrst_n(reset_n   & ~rst_a_clk),
@@ -1267,7 +1267,7 @@ scc_async_fifo #(.DW(8), .AW(2)) u_rx_fifo_a (
 
 scc_async_fifo #(.DW(8), .AW(2)) u_rx_fifo_b (
     .wclk(sclk_b), .wrst_n(sreset_n_b & ~rst_b_sclk),
-    .wen(rx_fifo_wen_b_s && !rx_fifo_wfull_b),
+    .wen(rx_fifo_wen_b_s && !rx_fifo_wfull_b && sclk_b_en),   // gate: one write per byte (else the held pulse fills the 4-deep FIFO -> 4x chars)
     .wdata(rx_fifo_wdata_b_s), .wfull(rx_fifo_wfull_b),
     .wempty(/*unused*/),
     .rclk(clk),    .rrst_n(reset_n   & ~rst_b_clk),

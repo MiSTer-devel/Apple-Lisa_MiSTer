@@ -134,18 +134,19 @@ module emu (
     assign HDMI_BLACKOUT = 0;
     assign HDMI_BOB_DEINT = 0;
 
-    // ---- Serial: SCC Channel A <-> MiSTer USER-port UART ---------------------
-    // Expose the Lisa's SCC Serial A (clean, separate modem-control pins) as the
-    // MiSTer UART (the "UART115200" entry in the conf string). TXDA/RXDA carry
-    // the data; the transmitter/receiver clock at the corrected baud now that the
-    // SCC serial domain runs on sccck_en/scc_pclk_en (see rtl/IO_board.sv). CTS
-    // and DCD are held asserted at the SCC so TX/RX are never gated -- host
-    // hardware flow control is not plumbed yet. RTS/DTR (active-low at the SCC)
-    // are surfaced to the host, inverted to the UART's active-high sense.
-    wire scc_txda, scc_rtsa_n, scc_dtra_n;
-    assign UART_TXD = scc_txda;
-    assign UART_RTS = ~scc_rtsa_n;
-    assign UART_DTR = ~scc_dtra_n;
+    // ---- Serial: SCC Serial A AND B both bridged to the MiSTer USER-port UART -
+    // Both channels' TxD are idle-high, so ANDing merges them onto the single host
+    // UART: whichever channel transmits pulls the line low, the idle one stays
+    // high. The host RxD is broadcast to both channels' RxD (the inactive channel
+    // ignores it). So BOTH Lisa serial ports work over the one MiSTer UART --
+    // Serial A (~3.9 MHz clock) and Serial B (exact 3.6864 MHz, required for 19200;
+    // Lisa Terminal itself directs 19200 to port B, which is why A alone failed).
+    // CTS/DCD are held asserted at the SCC so TX/RX are never gated; RTS/DTR (from
+    // B) are surfaced to the host, inverted to the UART's active-high sense.
+    wire scc_txda, scc_txdb, scc_rtsb_n, scc_dtrb_n;
+    assign UART_TXD = scc_txda & scc_txdb;
+    assign UART_RTS = ~scc_rtsb_n;
+    assign UART_DTR = ~scc_dtrb_n;
 
     // Aspect Ratio Configuration (Lisa screen is approx 4:3)
     wire [1:0] ar = status[10:9];
@@ -989,19 +990,19 @@ module emu (
         // Extra I/O & Switches
         .GPIO(6'b0),
         .SYNCA(1'b0),
-        .TXDA(scc_txda),   // -> UART_TXD
-        .RTSA(scc_rtsa_n), // active-low RTS out
-        .DTRA(scc_dtra_n), // active-low DTR out
-        .RXDA(UART_RXD),   // <- UART_RXD
+        .TXDA(scc_txda),   // merged into UART_TXD (AND with TXDB)
+        .RTSA(),
+        .DTRA(),
+        .RXDA(UART_RXD),   // host RxD broadcast to Ch A
         .CTSA(1'b0),       // CTS asserted (active-low): never gate TX
         .DCDA(1'b0),       // DCD asserted (active-low): never gate RX
         .TRXCA(),
         .RTXCA(1'b1),
-        .TXDB(),
-        .DTRB(),
-        .RTSB(),
-        .RXDB(1'b1),
-        .CTSB_TRXCB(1'b1),
+        .TXDB(scc_txdb),   // merged into UART_TXD (AND with TXDA)
+        .DTRB(scc_dtrb_n), // active-low DTR out
+        .RTSB(scc_rtsb_n), // active-low RTS out
+        .RXDB(UART_RXD),   // host RxD broadcast to Ch B
+        .CTSB_TRXCB(1'b0), // CTS asserted; TRxC pin unused (RTXC_XTAL_FULLRATE_B)
         .INTERNAL_SCC_EN(),
 
         ._PWRSW(lisa_pwrsw_n), // Auto power-on pulse (was tied 1'b1 = never on)
