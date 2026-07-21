@@ -1,11 +1,17 @@
 # Apple Lisa Sony 400K Floppy — Handoff
 
-**Status (2026-07-18): READ and WRITE both work on real hardware.**
+**Status (2026-07-21): READ and WRITE both work on real hardware — SHIPPED.**
 LisaTest 2.2 boots from the emulated floppy, and sectors the Lisa writes persist
-into the DiskCopy-4.2 image on the SD card.
+into the DiskCopy-4.2 image on the SD card. Validated end-to-end with a real
+LOS-desktop document save (`ld_wr.dc42` md5 `89040f41`→`67ccfd00`).
 
-Branch `floppy-datafield-debug` in both repos, pushed:
-`Apple-Lisa_MiSTer` → `8723cf1`, `LisaFPGA` (outer) → `a39e2aa`.
+Released on `origin/main` (`Apple-Lisa_MiSTer`, commit `0a5819e`); the read+write
+build is `releases/Apple-Lisa_20260717.rbf` (md5 `94530cc9`). The
+`floppy-datafield-debug` branch was fast-forward-merged and deleted.
+
+**OSD mount note:** the floppy file browser matches 3-char extensions
+(`S1,DC4DSKIMG`), so a `.dc42` image will NOT appear — rename/copy it to `.dc4`
+(or mount by explicit path in an `.mgl`, which bypasses the filter).
 
 The blow-by-blow of the six-week read-path hunt — including every dead end, so you
 don't re-run them — is in **FLOPPY_DEBUG_HISTORY.md**. This document is the
