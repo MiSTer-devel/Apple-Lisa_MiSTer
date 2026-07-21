@@ -20,9 +20,9 @@ the AM9512 FPU, the MMU, and the video state machine.
 
 ## Quick start
 
-1. Copy `Lisa.rbf` to `/media/fat/_Computer/` (or wherever you keep cores) on
-   your MiSTer SD card.
-2. Put ProFile hard‑disk images under `/media/fat/games/LISA/`.
+1. Copy `Apple-Lisa.rbf` to `/media/fat/_Computer/` (or wherever you keep cores)
+   on your MiSTer SD card.
+2. Put ProFile hard‑disk images under `/media/fat/games/Apple-Lisa/`.
 3. Launch the core. It powers on automatically and boots from the mounted
    ProFile.
 
@@ -42,16 +42,37 @@ when the Lisa failed" disk‑check dialog on the next boot.
 
 ### Mounting a ProFile disk
 
-ProFile images live in `/media/fat/games/LISA/` and are **532‑byte‑per‑block**
-raw images (e.g. `profile.img` = 9728 × 532 bytes). Mount one from the OSD
-(`Hard Disk` menu item), or auto‑mount at launch with an `.mgl` file:
+ProFile images live in `/media/fat/games/Apple-Lisa/` and are
+**532‑byte‑per‑block** raw images (e.g. `profile.img` = 9728 × 532 bytes). Mount
+one from the OSD (`Mount Hard Disk`), or auto‑mount at launch with an `.mgl` file:
 
 ```xml
 <mistergamedescription>
-	<rbf>Lisa</rbf>
-	<file delay="2" type="s" index="0" path="games/LISA/Lisa Office System 3.0.img"/>
+	<rbf>Apple-Lisa</rbf>
+	<file delay="2" type="s" index="0" path="games/Apple-Lisa/Lisa Office System 3.0.img"/>
 </mistergamedescription>
 ```
+
+### Mounting a floppy disk (Sony 400K)
+
+The core emulates the Lisa's internal **Sony 400K 3.5″ floppy drive** (slot `S1`,
+`Mount Floppy` in the OSD). **Both reading and writing work** — you can boot from
+a floppy and save documents to one from the Office System desktop; writes are
+flushed back to the disk image on the SD card.
+
+Floppy images are standard **DiskCopy 4.2** (`.dc42`) 400 KB images. **Important —
+rename `.dc42` to `.dc4`:** MiSTer's file browser matches three‑character
+extensions, so a `.dc42` file will *not* appear in the `Mount Floppy` list.
+Rename (or copy) it to `.dc4` and it shows up; `.dsk` and `.img` floppy images
+also work. (Auto‑mounting a `.dc42` by explicit path in an `.mgl` file still
+works — the extension filter only affects the OSD browser.)
+
+To save to a floppy from the desktop it must already be in Lisa Office System
+format — **formatting/initializing a blank floppy in the core does not work yet**
+(see `FLOPPY_HANDOFF.md`). Mount an already‑formatted disk and drag documents
+onto it. As with the ProFile, let the drive settle after a save and power down
+cleanly with `F11`: a sector written immediately before an abrupt eject may not
+be flushed.
 
 ### OSD options
 
@@ -85,11 +106,14 @@ month, day and time are correct.
 ## Status
 
 Working: boots the Lisa Office System to the desktop with clean, stable 720×364
-video; keyboard and mouse; ProFile hard‑disk emulation; SDRAM; 1×/2×/3× CPU
-speeds; auto power‑on and `F11` soft power‑off.
+video; keyboard and mouse; ProFile hard‑disk emulation; **Sony 400K floppy read
+and write**; SDRAM; 1×/2×/3× CPU speeds; auto power‑on and `F11` soft power‑off.
 
-See `progress_quartus_handover.md` and `todo.md` for the detailed engineering
-log and open items.
+Not yet working: **formatting / initializing a blank floppy** inside the core
+(mount an already‑formatted disk to read or write it).
+
+See `progress_quartus_handover.md`, `FLOPPY_HANDOFF.md`, and `todo.md` for the
+detailed engineering log and open items.
 
 ---
 
