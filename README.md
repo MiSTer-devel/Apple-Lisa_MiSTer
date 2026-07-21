@@ -94,6 +94,28 @@ be flushed.
   on the Lisa.
 - `F11` = power button (see above). `F12` = MiSTer OSD.
 
+### Serial ports & terminal software
+
+Both of the Lisa's serial ports (Serial A and Serial B, driven by the Z8530 SCC)
+are bridged to the MiSTer **UART**, so terminal programs such as **LisaTerminal**,
+and serial tools under the Workshop, can talk to the outside world.
+
+- **Baud** is selectable in the OSD (**Serial speed**): 19200 / 9600 / 4800 /
+  2400 / 1200 / 300. **It must match the baud you set in the Lisa software** — if
+  the two differ you get garbage or repeated characters. On the Lisa itself,
+  19200 is only available on **Serial B** (Serial A's baud clock tops out lower);
+  LisaTerminal will point this out, so Serial B is the usual choice.
+- The MiSTer **UART mode** selects what the host side is connected to — a login
+  console, a modem/telnet bridge, MIDI, etc. — the standard MiSTer UART options.
+- Both Lisa ports share the single MiSTer UART, so you can't actively transmit on
+  Serial A and Serial B at the same time (fine for normal single‑terminal use).
+
+### Video output
+
+HDMI always shows the scaled, standard‑timing picture. The **analog VGA** output
+mirrors that same scaled signal (the Lisa's native ~22.75 kHz horizontal rate is
+below what a VGA monitor can lock to, so the raw raster can't be sent directly).
+
 ### Clock / calendar
 
 The core seeds the Lisa's COP real‑time clock from your MiSTer's clock at
@@ -106,8 +128,9 @@ month, day and time are correct.
 ## Status
 
 Working: boots the Lisa Office System to the desktop with clean, stable 720×364
-video; keyboard and mouse; ProFile hard‑disk emulation; **Sony 400K floppy read
-and write**; SDRAM; 1×/2×/3× CPU speeds; auto power‑on and `F11` soft power‑off.
+video on **HDMI and analog VGA**; keyboard and mouse; ProFile hard‑disk
+emulation; **Sony 400K floppy read and write**; **Z8530 serial ports (LisaTerminal
+etc.)**; SDRAM; 1×/2×/3× CPU speeds; auto power‑on and `F11` soft power‑off.
 
 Not yet working: **formatting / initializing a blank floppy** inside the core
 (mount an already‑formatted disk to read or write it).

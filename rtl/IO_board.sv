@@ -1862,38 +1862,18 @@ module IO_board(
         dbg_kv_wr_cnt, dbg_kv_rd_cnt, dbg_pp_io_nz,
         _ProFile_EN, _CMD_ungated, _CMD, _PSTRB, dbg_cmd_while_en
     }), .source_clk(clk_sys), .source_ena(1'b1) );
-    // LSEQ (repurposed for SCC serial bring-up, remove for release):
-    //   [63:48]=writes to SCC DATA reg   (is Lisa Terminal sending bytes?)
-    //   [47:32]=writes to SCC CONTROL reg (is software talking to the SCC at all?)
-    //   [31:24]=Ch A TxD edges  [23:16]=Ch B TxD edges  [15:8]=Ch A RxD edges (8-bit sat)
-    //   [7]=last-write A[1] (chan A=1)  [6]=last-write A[2] (data=1)
-    //   [5]=TXDA [4]=TXDB [3]=RXDA [2]=RXDB [1:0]=0
+    // LSEQ: GCR read diagnosis. [63]=saw D5 AA 96 (addr mark) [62]=saw D5 AA AD
+    //   (data mark) [61]=saw DE AA data epilogue (framing held to field end)
+    //   [60]=FDIR_ever [59]=FDIR [47:32]=valid byte count
+    //   [31:24]=dcap0 [23:16]=dcap1 [15:8]=dcap2 [7:0]=dcap3 (first 4 GCR bytes after data mark)
     reg fdir_ever = 1'b0;
     always @(posedge clk_sys) if (FDIR) fdir_ever <= 1'b1;
-    reg [15:0] dbg_scc_data_wr = 0, dbg_scc_ctrl_wr = 0;
-    reg [7:0]  dbg_txda_edges = 0, dbg_txdb_edges = 0, dbg_rxda_edges = 0;
-    reg dbg_txda_d = 0, dbg_txdb_d = 0, dbg_rxda_d = 0, dbg_scc_wr_d = 0;
-    reg dbg_last_ab = 0, dbg_last_dc = 0;
-    wire dbg_scc_wr = CS_SCC & ~_WSIO;   // SCC write cycle (wr_n active-low)
-    always @(posedge clk_sys) begin
-        dbg_txda_d <= TXDA; dbg_txdb_d <= TXDB; dbg_rxda_d <= RXDA;
-        if ((TXDA ^ dbg_txda_d) && dbg_txda_edges != 8'hFF) dbg_txda_edges <= dbg_txda_edges + 1'b1;
-        if ((TXDB ^ dbg_txdb_d) && dbg_txdb_edges != 8'hFF) dbg_txdb_edges <= dbg_txdb_edges + 1'b1;
-        if ((RXDA ^ dbg_rxda_d) && dbg_rxda_edges != 8'hFF) dbg_rxda_edges <= dbg_rxda_edges + 1'b1;
-        dbg_scc_wr_d <= dbg_scc_wr;
-        if (dbg_scc_wr & ~dbg_scc_wr_d) begin      // one count per write cycle
-            dbg_last_ab <= A[1]; dbg_last_dc <= A[2];
-            if (A[2]) begin if (dbg_scc_data_wr != 16'hFFFF) dbg_scc_data_wr <= dbg_scc_data_wr + 1'b1; end
-            else      begin if (dbg_scc_ctrl_wr != 16'hFFFF) dbg_scc_ctrl_wr <= dbg_scc_ctrl_wr + 1'b1; end
-        end
-    end
     altsource_probe #(
         .instance_id ("LSEQ"), .probe_width (64), .source_width (1),
         .source_initial_value ("0"), .enable_metastability ("NO")
     ) u_seq_probe ( .source(), .probe({
-        dbg_scc_data_wr, dbg_scc_ctrl_wr,
-        dbg_txda_edges, dbg_txdb_edges, dbg_rxda_edges,
-        dbg_last_ab, dbg_last_dc, TXDA, TXDB, RXDA, RXDB, 2'b00
+        seq_saw_addr, seq_saw_data, seq_saw_depi, fdir_ever, FDIR, 11'd0,
+        seq_valid_cnt, dcap0, dcap1, dcap2, dcap3
     }), .source_clk(clk_sys), .source_ena(1'b1) );
     // LFDR: FDC-RAM dump. source = 10-bit RAM address, probe [7:0] = that byte
     // (high nibble from high_FDC_RAM, low from low_FDC_RAM), [17:8] = the address
