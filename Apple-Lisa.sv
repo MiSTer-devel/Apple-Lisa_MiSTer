@@ -164,7 +164,7 @@ module emu (
     // OSD / Config String Definition
     `include "build_id.v"
     localparam CONF_STR = {
-        "Apple-Lisa;UART115200;",
+        "Apple-Lisa;UART19200:9600:4800:2400:1200:300;",
         "-;",
         "S0,IMGVHD,Mount Hard Disk;",
         "S1,DC4DSKIMG,Mount Floppy;",
