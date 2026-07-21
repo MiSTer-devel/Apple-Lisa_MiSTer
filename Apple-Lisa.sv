@@ -123,11 +123,29 @@ module emu (
     assign LED_DISK  = |disk_led_cnt;
     assign LED_POWER = 0;
     assign BUTTONS   = 0;
-    assign VGA_SCALER= 0;
+    // Lisa native video is ~720x364 @ ~22.75 kHz Hsync -- BELOW a standard VGA
+    // monitor's ~31 kHz sync floor, and a scandoubler only reaches ~45.5 kHz
+    // (still non-standard). Force the analog DAC to mirror the ascal-scaled,
+    // standard-timing signal so a real VGA monitor can lock. (HDMI is always fed
+    // by the scaler regardless; this only affects the analog output.)
+    assign VGA_SCALER= 1;
     assign VGA_DISABLE = 0;
     assign HDMI_FREEZE = 0;
     assign HDMI_BLACKOUT = 0;
     assign HDMI_BOB_DEINT = 0;
+
+    // ---- Serial: SCC Channel A <-> MiSTer USER-port UART ---------------------
+    // Expose the Lisa's SCC Serial A (clean, separate modem-control pins) as the
+    // MiSTer UART (the "UART115200" entry in the conf string). TXDA/RXDA carry
+    // the data; the transmitter/receiver clock at the corrected baud now that the
+    // SCC serial domain runs on sccck_en/scc_pclk_en (see rtl/IO_board.sv). CTS
+    // and DCD are held asserted at the SCC so TX/RX are never gated -- host
+    // hardware flow control is not plumbed yet. RTS/DTR (active-low at the SCC)
+    // are surfaced to the host, inverted to the UART's active-high sense.
+    wire scc_txda, scc_rtsa_n, scc_dtra_n;
+    assign UART_TXD = scc_txda;
+    assign UART_RTS = ~scc_rtsa_n;
+    assign UART_DTR = ~scc_dtra_n;
 
     // Aspect Ratio Configuration (Lisa screen is approx 4:3)
     wire [1:0] ar = status[10:9];
@@ -971,12 +989,12 @@ module emu (
         // Extra I/O & Switches
         .GPIO(6'b0),
         .SYNCA(1'b0),
-        .TXDA(),
-        .RTSA(),
-        .DTRA(),
-        .RXDA(1'b1),
-        .CTSA(1'b1),
-        .DCDA(1'b1),
+        .TXDA(scc_txda),   // -> UART_TXD
+        .RTSA(scc_rtsa_n), // active-low RTS out
+        .DTRA(scc_dtra_n), // active-low DTR out
+        .RXDA(UART_RXD),   // <- UART_RXD
+        .CTSA(1'b0),       // CTS asserted (active-low): never gate TX
+        .DCDA(1'b0),       // DCD asserted (active-low): never gate RX
         .TRXCA(),
         .RTXCA(1'b1),
         .TXDB(),

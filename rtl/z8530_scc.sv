@@ -70,6 +70,8 @@ module z8530_scc #(
     input  wire        clk,           // CPU/bus clock (register file, interrupts, RR mux)
     input  wire        pclk,          // Alternative BRG/serializer clock (Zilog "PCLK")
     input  wire        sclk,          // Primary BRG/serializer clock (e.g. 3.6864 MHz)
+    input  wire        pclk_en,       // Ch-A serial-domain enable strobe (~3.9 MHz); gates the pclk-sourced BRG
+    input  wire        sclk_en,       // Ch-B serial-domain enable strobe (3.6864 MHz); gates the sclk-sourced BRG
     input  wire        reset_n,       // Active low reset (async assert)
 
     // CPU Interface
@@ -290,15 +292,20 @@ assign txdb = wr5_b_s[4] ? 1'b0 : tx_out_b;
 
 wire sclk_a = (BRG_SRC_A != 0) ? sclk : pclk;
 wire sclk_b = (BRG_SRC_B != 0) ? sclk : pclk;
+// Single-clock + enable conversion: every sclk-domain block below now runs on
+// `clk` (== clk_sys) and advances only on these strobes, so the BRG counts at
+// the true 3.6864/3.9 MHz average instead of 81.5 MHz. Mirrors the BRG_SRC mux.
+wire sclk_a_en = (BRG_SRC_A != 0) ? sclk_en : pclk_en;
+wire sclk_b_en = (BRG_SRC_B != 0) ? sclk_en : pclk_en;
 
 reg [1:0] sreset_a_sync, sreset_b_sync;
-always @(posedge sclk_a or negedge reset_n) begin
+always @(posedge clk or negedge reset_n) begin
     if (!reset_n) sreset_a_sync <= 2'b00;
-    else          sreset_a_sync <= {sreset_a_sync[0], 1'b1};
+    else if (sclk_a_en)          sreset_a_sync <= {sreset_a_sync[0], 1'b1};
 end
-always @(posedge sclk_b or negedge reset_n) begin
+always @(posedge clk or negedge reset_n) begin
     if (!reset_n) sreset_b_sync <= 2'b00;
-    else          sreset_b_sync <= {sreset_b_sync[0], 1'b1};
+    else if (sclk_b_en)          sreset_b_sync <= {sreset_b_sync[0], 1'b1};
 end
 wire sreset_n_a = sreset_a_sync[1];
 wire sreset_n_b = sreset_b_sync[1];
@@ -348,13 +355,13 @@ wire force_clk = (force_cnt != 0);   // force reset, clears shared WR2/WR9
 
 // CDC the channel soft-resets into their respective sclk_* domains
 reg [2:0] rst_a_sclk_sync, rst_b_sclk_sync;
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) rst_a_sclk_sync <= 3'b0;
-    else             rst_a_sclk_sync <= {rst_a_sclk_sync[1:0], rst_a_clk};
+    else if (sclk_a_en)             rst_a_sclk_sync <= {rst_a_sclk_sync[1:0], rst_a_clk};
 end
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) rst_b_sclk_sync <= 3'b0;
-    else             rst_b_sclk_sync <= {rst_b_sclk_sync[1:0], rst_b_clk};
+    else if (sclk_b_en)             rst_b_sclk_sync <= {rst_b_sclk_sync[1:0], rst_b_clk};
 end
 wire rst_a_sclk = rst_a_sclk_sync[2];   // channel A soft reset (sclk_a domain)
 wire rst_b_sclk = rst_b_sclk_sync[2];   // channel B soft reset (sclk_b domain)
@@ -363,24 +370,24 @@ wire rst_b_sclk = rst_b_sclk_sync[2];   // channel B soft reset (sclk_b domain)
 // Clock-pin synchronizers (sclk) + clk-side re-sync (for legacy users)
 //============================================================================
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) begin
         rxca_sync_s <= 3'b0;
         txca_sync_s <= 3'b0;
         rxda_sync_s <= 3'b111;
-    end else begin
+    end else if (sclk_a_en) begin
         rxca_sync_s <= {rxca_sync_s[1:0], rxca};
         txca_sync_s <= {txca_sync_s[1:0], txca};
         rxda_sync_s <= {rxda_sync_s[1:0], rxda};
     end
 end
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) begin
         rxcb_sync_s <= 3'b0;
         txcb_sync_s <= 3'b0;
         rxdb_sync_s <= 3'b111;
-    end else begin
+    end else if (sclk_b_en) begin
         rxcb_sync_s <= {rxcb_sync_s[1:0], rxcb};
         txcb_sync_s <= {txcb_sync_s[1:0], txcb};
         rxdb_sync_s <= {rxdb_sync_s[1:0], rxdb};
@@ -429,7 +436,7 @@ assign txcb_rise = (txcb_sync_c[2:1] == 2'b01);
 //   sync because reads happen long after any write completes.
 //============================================================================
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) begin
         wr3_a_s1  <= 8'h0; wr3_a_s  <= 8'h0;
         wr4_a_s1  <= 8'h0; wr4_a_s  <= 8'h0;
@@ -438,7 +445,7 @@ always @(posedge sclk_a or negedge sreset_n_a) begin
         wr12_a_s1 <= 8'h0; wr12_a_s <= 8'h0;
         wr13_a_s1 <= 8'h0; wr13_a_s <= 8'h0;
         wr14_a_s1 <= 8'h0; wr14_a_s <= 8'h0;
-    end else begin
+    end else if (sclk_a_en) begin
         wr3_a_s1  <= wr3_a;  wr3_a_s  <= wr3_a_s1;
         wr4_a_s1  <= wr4_a;  wr4_a_s  <= wr4_a_s1;
         wr5_a_s1  <= wr5_a;  wr5_a_s  <= wr5_a_s1;
@@ -449,7 +456,7 @@ always @(posedge sclk_a or negedge sreset_n_a) begin
     end
 end
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) begin
         wr3_b_s1  <= 8'h0; wr3_b_s  <= 8'h0;
         wr4_b_s1  <= 8'h0; wr4_b_s  <= 8'h0;
@@ -458,7 +465,7 @@ always @(posedge sclk_b or negedge sreset_n_b) begin
         wr12_b_s1 <= 8'h0; wr12_b_s <= 8'h0;
         wr13_b_s1 <= 8'h0; wr13_b_s <= 8'h0;
         wr14_b_s1 <= 8'h0; wr14_b_s <= 8'h0;
-    end else begin
+    end else if (sclk_b_en) begin
         wr3_b_s1  <= wr3_b;  wr3_b_s  <= wr3_b_s1;
         wr4_b_s1  <= wr4_b;  wr4_b_s  <= wr4_b_s1;
         wr5_b_s1  <= wr5_b;  wr5_b_s  <= wr5_b_s1;
@@ -489,11 +496,11 @@ wire [15:0] brg_divisor_b     = (UNIPLUS_BAUD_PATCH_B != 0 &&
                                 ? 16'h000A : brg_divisor_b_raw;
 wire [16:0] brg_reload_b      = {1'b0, brg_divisor_b} + 17'd1;
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) begin
         brg_counter_a <= 17'd0;
         brg_out_a     <= 1'b0;
-    end else if (rst_a_sclk) begin
+    end else if (sclk_a_en) if (rst_a_sclk) begin
         brg_counter_a <= 17'd0;
         brg_out_a     <= 1'b0;
     end else if (brg_enabled_a_s) begin
@@ -506,11 +513,11 @@ always @(posedge sclk_a or negedge sreset_n_a) begin
     end
 end
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) begin
         brg_counter_b <= 17'd0;
         brg_out_b     <= 1'b0;
-    end else if (rst_b_sclk) begin
+    end else if (sclk_b_en) if (rst_b_sclk) begin
         brg_counter_b <= 17'd0;
         brg_out_b     <= 1'b0;
     end else if (brg_enabled_b_s) begin
@@ -527,14 +534,14 @@ end
 wire brg_rise_a_s = brg_out_a & ~brg_out_a_d;
 wire brg_rise_b_s = brg_out_b & ~brg_out_b_d;
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) brg_out_a_d <= 1'b0;
-    else             brg_out_a_d <= rst_a_sclk ? 1'b0 : brg_out_a;
+    else if (sclk_a_en)             brg_out_a_d <= rst_a_sclk ? 1'b0 : brg_out_a;
 end
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) brg_out_b_d <= 1'b0;
-    else             brg_out_b_d <= rst_b_sclk ? 1'b0 : brg_out_b;
+    else if (sclk_b_en)             brg_out_b_d <= rst_b_sclk ? 1'b0 : brg_out_b;
 end
 
 //============================================================================
@@ -562,20 +569,20 @@ wire rx_clk_b_s = rtxc_xtal_b_s ? 1'b1 : ((wr11_b_s[6:5] == 2'b10) ? brg_rise_b_
 //   /CTS has actually been seen after reset (matches the real chip).
 //============================================================================
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) begin
         ctsa_s_sync <= 2'b11;
         dcda_s_sync <= 2'b11;
-    end else begin
+    end else if (sclk_a_en) begin
         ctsa_s_sync <= {ctsa_s_sync[0], ctsa_n};
         dcda_s_sync <= {dcda_s_sync[0], dcda_n};
     end
 end
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) begin
         ctsb_s_sync <= 2'b11;
         dcdb_s_sync <= 2'b11;
-    end else begin
+    end else if (sclk_b_en) begin
         ctsb_s_sync <= {ctsb_s_sync[0], ctsb_n};
         dcdb_s_sync <= {dcdb_s_sync[0], dcdb_n};
     end
@@ -696,7 +703,7 @@ wire        two_stop_bits_a_s = (wr4_a_s[3:2] == 2'b11);
 wire        x1_mode_a_s      = (wr4_a_s[7:6] == 2'b00);
 wire [5:0]  clk_mult_a_s     = get_clk_mult(wr4_a_s[7:6]);
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) begin
         tx_state_a            <= TX_IDLE;
         tx_shift_a            <= 8'hFF;
@@ -707,7 +714,7 @@ always @(posedge sclk_a or negedge sreset_n_a) begin
         tx_underrun_a         <= 1'b0;
         tx_byte_grab_toggle_a <= 1'b0;
         tx_fifo_ren_a_s       <= 1'b0;
-    end else if (rst_a_sclk) begin   // synchronous soft reset (Channel Reset A / force)
+    end else if (sclk_a_en) if (rst_a_sclk) begin   // synchronous soft reset (Channel Reset A / force)
         tx_state_a            <= TX_IDLE;
         tx_shift_a            <= 8'hFF;
         tx_bit_cnt_a          <= 4'd0;
@@ -802,7 +809,7 @@ wire        two_stop_bits_b_s = (wr4_b_s[3:2] == 2'b11);
 wire        x1_mode_b_s      = (wr4_b_s[7:6] == 2'b00);
 wire [5:0]  clk_mult_b_s     = get_clk_mult(wr4_b_s[7:6]);
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) begin
         tx_state_b            <= TX_IDLE;
         tx_shift_b            <= 8'hFF;
@@ -813,7 +820,7 @@ always @(posedge sclk_b or negedge sreset_n_b) begin
         tx_underrun_b         <= 1'b0;
         tx_byte_grab_toggle_b <= 1'b0;
         tx_fifo_ren_b_s       <= 1'b0;
-    end else if (rst_b_sclk) begin   // synchronous soft reset (Channel Reset B / force)
+    end else if (sclk_b_en) if (rst_b_sclk) begin   // synchronous soft reset (Channel Reset B / force)
         tx_state_b            <= TX_IDLE;
         tx_shift_b            <= 8'hFF;
         tx_bit_cnt_b          <= 4'd0;
@@ -920,14 +927,14 @@ always @(posedge clk or negedge reset_n) begin
     end
 end
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) err_rst_a_sync_s <= 3'b0;
-    else             err_rst_a_sync_s <= {err_rst_a_sync_s[1:0], err_rst_toggle_a};
+    else if (sclk_a_en)             err_rst_a_sync_s <= {err_rst_a_sync_s[1:0], err_rst_toggle_a};
 end
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) err_rst_b_sync_s <= 3'b0;
-    else             err_rst_b_sync_s <= {err_rst_b_sync_s[1:0], err_rst_toggle_b};
+    else if (sclk_b_en)             err_rst_b_sync_s <= {err_rst_b_sync_s[1:0], err_rst_toggle_b};
 end
 
 wire err_rst_pulse_a_s = err_rst_a_sync_s[2] ^ err_rst_a_sync_s[1];
@@ -954,11 +961,11 @@ wire        rx_data_b_s    = loopback_b_s ? (wr5_b_s[4] ? 1'b0 : tx_out_b)
 //   software setting Send Break in loopback also triggers the receiver.
 //============================================================================
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) begin
         break_a_s   <= 1'b0;
         break_cnt_a <= 8'd0;
-    end else if (rst_a_sclk) begin
+    end else if (sclk_a_en) if (rst_a_sclk) begin
         break_a_s   <= 1'b0;
         break_cnt_a <= 8'd0;
     end else begin
@@ -981,11 +988,11 @@ always @(posedge sclk_a or negedge sreset_n_a) begin
     end
 end
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) begin
         break_b_s   <= 1'b0;
         break_cnt_b <= 8'd0;
-    end else if (rst_b_sclk) begin
+    end else if (sclk_b_en) if (rst_b_sclk) begin
         break_b_s   <= 1'b0;
         break_cnt_b <= 8'd0;
     end else begin
@@ -1016,7 +1023,7 @@ wire [3:0]  rx_char_bits_a_s  = get_rx_bits(wr3_a_s);
 wire [5:0]  rx_start_sample_a_s = get_start_sample(wr4_a_s[7:6]);
 wire [5:0]  rx_bit_sample_a_s   = get_clk_mult(wr4_a_s[7:6]);
 
-always @(posedge sclk_a or negedge sreset_n_a) begin
+always @(posedge clk or negedge sreset_n_a) begin
     if (!sreset_n_a) begin
         rx_state_a        <= RX_IDLE;
         rx_shift_a        <= 8'd0;
@@ -1028,7 +1035,7 @@ always @(posedge sclk_a or negedge sreset_n_a) begin
         rx_parity_err_a   <= 1'b0;
         rx_fifo_wen_a_s   <= 1'b0;
         rx_fifo_wdata_a_s <= 8'h00;
-    end else if (rst_a_sclk) begin   // synchronous soft reset (Channel Reset A / force)
+    end else if (sclk_a_en) if (rst_a_sclk) begin   // synchronous soft reset (Channel Reset A / force)
         rx_state_a        <= RX_IDLE;
         rx_shift_a        <= 8'd0;
         rx_bit_cnt_a      <= 4'd0;
@@ -1124,7 +1131,7 @@ wire [3:0]  rx_char_bits_b_s  = get_rx_bits(wr3_b_s);
 wire [5:0]  rx_start_sample_b_s = get_start_sample(wr4_b_s[7:6]);
 wire [5:0]  rx_bit_sample_b_s   = get_clk_mult(wr4_b_s[7:6]);
 
-always @(posedge sclk_b or negedge sreset_n_b) begin
+always @(posedge clk or negedge sreset_n_b) begin
     if (!sreset_n_b) begin
         rx_state_b        <= RX_IDLE;
         rx_shift_b        <= 8'd0;
@@ -1136,7 +1143,7 @@ always @(posedge sclk_b or negedge sreset_n_b) begin
         rx_parity_err_b   <= 1'b0;
         rx_fifo_wen_b_s   <= 1'b0;
         rx_fifo_wdata_b_s <= 8'h00;
-    end else if (rst_b_sclk) begin   // synchronous soft reset (Channel Reset B / force)
+    end else if (sclk_b_en) if (rst_b_sclk) begin   // synchronous soft reset (Channel Reset B / force)
         rx_state_b        <= RX_IDLE;
         rx_shift_b        <= 8'd0;
         rx_bit_cnt_b      <= 4'd0;

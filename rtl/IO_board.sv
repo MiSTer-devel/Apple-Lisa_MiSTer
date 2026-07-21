@@ -1128,11 +1128,23 @@ module IO_board(
     // Regardless, we can just tie it high ourselves too
     assign _PSI = 1'b1;
 
+    // SCC serial-domain clock ENABLES. The SCC now runs entirely on clk_sys and
+    // its baud generators advance only on these strobes (single-clock + enable
+    // architecture) -- previously the serial engine ran at raw clk_sys (81.5MHz),
+    // making every baud rate ~22x too fast. Channel B uses sccck_en (3.6864MHz,
+    // the real SCC crystal, Uniplus-patched for exact 9600). Channel A wants
+    // ~4MHz PCLK, so halve copck2x_en (7.80MHz) to ~3.90MHz.
+    logic scc_pclk_div = 1'b0;
+    always_ff @(posedge clk_sys) if (copck2x_en) scc_pclk_div <= ~scc_pclk_div;
+    wire scc_pclk_en = copck2x_en & scc_pclk_div;   // ~3.90 MHz strobe
+
     // Now go ahead and instantiate the SCC core
     z8530_scc absolutely_amazing_scc_implementation (
-        .clk(clk_sys), // Use the DOTCK as the main "fast clock" for the SCC
-        .pclk(clk_sys), // Also feed in our 4MHz clock for use on Serial A
-        .sclk(clk_sys), // And then feed the 3.68MHz clock for Serial B as well
+        .clk(clk_sys),  // one fast clock for the whole SCC
+        .pclk(clk_sys),
+        .sclk(clk_sys),
+        .pclk_en(scc_pclk_en), // Ch A serial-domain enable (~3.90 MHz)
+        .sclk_en(sccck_en),    // Ch B serial-domain enable (3.6864 MHz)
         .reset_n(_RESET_SYSTEM), // Active-low reset; make sure to use the DOTCK-synchronized one not the C16M one
         .cs_n(~CS_SCC), // Chip select, read, and write strobes, all active-low
         .rd_n(_RSIO), 
